@@ -1,4 +1,3 @@
-
 # SookaStage — Stage Automation Progress & Known Issues
 Last updated: 2026-09-17 (Malaysia timezone)
 
@@ -10,31 +9,96 @@ Automation flows are split per Discord client (3 streamers):
 | 2 | Canary | 9225 | Chrome Beta | 1481358977584599283 |
 | 3 | PTB | 9224 | Google Chrome | 1481359453759475876 |
 
-Flow per client: launch w/ `--remote-debugging-port` → navigate stage channel (channel-ID is source of truth, not name — names are rewritten live by voice_renamer) → join stage (li → a DOM click works without focus) → "Start the Stage" (topic modal w/ prefill) → "Continue without starting" or confirm topic → **Share Your Screen** → tile select (sooka browser window) → "Go Live".
+Flow per client: deep-link nav (channel-ID is source of truth, not name — names
+are rewritten live by voice_renamer) → undeafen if needed → join stage (li → a
+DOM click works without focus) → **Start Stage** (topic modal, prefill topic) →
+**Share Your Screen** → tile select (match the target browser, refuse to guess)
+→ **Go Live**. Every step verifies its own postcondition before the next runs.
 
 ## Working (verified live)
-- Streamer2 (Canary/9225) & Streamer3 (PTB/9224) — full end-to-end automation success, screenshare sooka browser live (panel text `Watch online Live Sports, sooka - Brave 1440p 60FPS`).
+- Streamer2 (Canary/9225) & Streamer3 (PTB/9224) — full end-to-end automation
+  success, screenshare sooka browser live (panel text
+  `Watch online Live Sports, sooka - Brave 1440p 60FPS`).
 - Join stage via DOM `li a.click()` — no window focus needed.
 - Undeafen shortcut `Ctrl+Shift+D`.
-- Main (9223) completed FULL flow once (screenshare live verified visually) but is not stable across reruns — see issues.
+- Main (9223) completed FULL flow once (screenshare live verified visually) but
+  is not stable across reruns — see issues.
 
 ## Root causes identified
-1. **Old main build (app-1.0.9258) DevTools wedging** — HTTP `/json` endpoint sticks after a few WebSocket sessions; rect lookups via `Runtime.evaluate` die mid-flow. PTB/Canary builds (app-1.0.117x) unaffected. Fix path: single persistent ws session per script (Claude-verified approach), or upgrade main client (breaks saved-session? untested). Deep-link relaunch `Discord.exe --remote-debugging-port=9223 "discord://-/channels/GUILD_ID/CHANNEL_ID"` correctly restores stage view at launch.
-2. **"Server Deafened" permission modal blocks share flow** — main client gets deafened (manual toggle / ctrl+shift+D caught mid-automation). Every share click while deafened spawns the modal instead of the picker. Fix: send `Ctrl+Shift+D` once (undeaften works via keyboard).
-3. **Stage "Start the Stage" topic modal** — topic input + Start Stage button: button click at rect coordinates does not register on main build; clicking "Continue without starting" instead enters speaker mode reliably. Stage must be **STARTED** before the Share button exists — that is what made Stream1 look "not live on channel 1".
-4. **Spanner: voice_renamer rewrites channel names live** — NEVER match stage by name; always use channel ID → API name resolution → `data-dnd-name` lookup (implemented; name hints are dead).
-5. **Share picker tile selection** — all sooka browser windows share the same page title ("Watch online Live Sports…"), they only differ by browser suffix (Brave / Chrome / Chrome Beta). Tile must be matched against the target browser string; mis-clicks caused two streams sharing the same browser window (owner saw "same channel on all browsers").
-6. **sooka PiP floating window** covers Discord clicks intermittently — PiP must be closed before click-chain.
+1. **Old main build (app-1.0.9258) DevTools wedging** — HTTP `/json` endpoint
+   sticks after a few WebSocket sessions. PTB/Canary builds (app-1.0.117x)
+   unaffected. Mitigated: `http_json()` retries, and the runner makes exactly
+   one `/json` call then keeps a single persistent ws for the whole process.
+   Deep-link relaunch `Discord.exe --remote-debugging-port=9223
+   "discord://-/channels/GUILD_ID/CHANNEL_ID"` correctly restores stage view.
+2. **"Server Deafened" permission modal blocks share flow** — every share click
+   while deafened spawns the modal instead of the picker. Fixed:
+   `ensure_undeafened()` clicks Undeafen (that button exists only while
+   deafened), falls back to `Ctrl+Shift+D`, then verifies the state flipped.
+3. **Stage must be STARTED before the Share button exists.** This was the ch1
+   blocker — and the v1 runner made it permanent by clicking "Continue without
+   starting", the one branch that guarantees the stage does not start. Fixed:
+   `ensure_stage_started()` types the topic and clicks **Start Stage**.
+4. **voice_renamer rewrites channel names live** — NEVER match a stage by name;
+   channel ID only. Implemented; name hints are dead.
+5. **Share picker tile selection** — all sooka windows share the page title
+   ("Watch online Live Sports…"), differing only by browser suffix, and
+   `"chrome" in label` matches both Chrome Beta and Google Chrome, which put two
+   streams on one window. Fixed: `choose_tile()` resolves each tile to its
+   longest known browser phrase and **refuses to click** when two tiles are
+   indistinguishable.
+6. **sooka PiP floating window covering clicks** — no longer relevant on the CDP
+   path. `Input.dispatchMouseEvent` goes to the renderer, so overlay windows
+   (PiP, the Codex ComputerUse overlay, the topmost watchdog) cannot intercept
+   it. This only ever affected the `pyautogui` approach in `main40.py`.
+
+## Runner defects found in the v1 draft (2026-09-17 review)
+The v1 `sookastage_prod.py` could not have worked, for reasons independent of
+Discord:
+
+- **Every click was a silent no-op.** `ev()` parsed the JSON returned by
+  `Runtime.evaluate`, then `clipped_click` parsed the resulting dict *again* →
+  `TypeError` → swallowed by `except Exception` → `d = None` → `return None`.
+- **Steps 3 and 4 aimed at the wrong element.** Their predicates never
+  referenced the element under test, so `.find(x => …)` returned the first
+  button on the page instead of the picker tile / Go Live button.
+- **Wrong branch at step 1** — "Continue without starting" (root cause #3).
+- WebSocket opcode ignored → one PING or fragmented frame killed the run.
+- `[t for t in j …][0]` → `IndexError` when the client was on another view.
+- `findstr ":9223"` matched `19223` and remote ports, and kept the last match.
+- `get_win_rect_by_pid` could return `None`, unpacked into six names next line.
+- No `try/except` in `main()`, and `log()` swallowed everything → scheduled-task
+  failures were invisible.
+
+Full table with effects: [`HERMES_GUIDE.md`](HERMES_GUIDE.md) §5.
 
 ## Current state as of this commit
-- ch1 (1477692113738137600): stage started (topic "1"), STREAMER1 speaker in stage, **screen share NOT live** — the Share Your Screen picker never appears after the topic modal is dismissed; clicking Go Live button in voice panel opens nothing (suspected: needs stage view as main content + non-deafened state + picker coords). Owner will retest tomorrow.
+- Runner rewritten as a verified state machine (`sookastage_prod.py`) on a
+  hardened CDP client (`sooka_cdp.py`), plus a preflight triage tool
+  (`sooka_diag.py`) and regression tests (`tests/test_sooka.py`, 24 passing).
+- Clicks are now **hit-tested**: dispatch `mouseMoved`, confirm via
+  `document.querySelectorAll(':hover')` (which only trusted input can set), and
+  only then press. A click that cannot land is reported as failed with its
+  reason (`covered-by:<what>` / `no-coordinate-hit`) instead of passing silently.
+- Coordinate-space mismatch between `getBoundingClientRect()` and
+  `Input.dispatchMouseEvent` (the likely cause of "rect click does not register
+  on main build") is handled by a self-calibrating scale ladder; measure it with
+  `sooka_diag.py --calibrate`.
 - ch2 + ch3: LIVE via screenshare automation.
-- Ghost cmd consoles + one-shot schtasks cleaned; only operational tasks remain (SookaBootFix, SookaRenamer, SookCDP, SookDLaunch, SookTopWatch).
-- Topmost watchdog keeps sooka browser above Codex overlay (root cause of "dark tile" was Codex ComputerUse fullscreen overlay pid — keep browsers TOPMOST or close ChatGPT desktop agent while streaming).
+- ch1 (1477692113738137600): awaiting a run of the fixed flow on the box.
+- **Not yet verified against live Discord:** the DOM selectors in `SELECTORS` and
+  `STATE_JS`. Phase 0 of [`HERMES_PLAN.md`](HERMES_PLAN.md) confirms them;
+  `sooka_diag.py --buttons` prints the live labels.
+- Ghost cmd consoles + one-shot schtasks cleaned; only operational tasks remain
+  (SookaBootFix, SookaRenamer, SookCDP, SookDLaunch, SookTopWatch).
 
-## Next steps (tomorrow)
-1. Retain flow on fresh restart; first click topic "1" → "Start Stage" using a REAL mouse click inside the visible window (not scheduled task context — task context may not own foreground per Windows foreground-lock).
-2. Add `AttachThreadInput` helper before `SetForegroundWindow` from schtask context (flag: Claude CTRL code review recommended this).
-3. Share picker tile selection: match by browser window rect (top-left / top-right / bottom-left) instead of title strings.
-4. Wrap the full chain into `sookastage_prod.py` + "STREAM ALL 3" button in SookaStream Manager GUI (manager repo); add stage watchdog (re-run flow if a stream drops).
-5. Update the launcher bat to use the per-channel deep-link launch so stage view always opens first.
+## Next steps
+Tracked as ordered phases with acceptance criteria in
+[`HERMES_PLAN.md`](HERMES_PLAN.md):
+
+0. Confirm the selectors against a live client (~15 min, do this first).
+1. Get ch1 end-to-end on the fixed flow.
+2. `--all` from a scheduled-task context; three distinct browser windows.
+3. Stage watchdog + "STREAM ALL 3" button in the SookaStream Manager GUI.
+4. Hardening — upgrade the main client off app-1.0.9258 to retire the `/json`
+   wedge (untested against the saved session; back up first), retire `main40.py`.

@@ -1,3 +1,13 @@
+"""DEPRECATED -- kept only as a record of the 16 Sep 2026 debug session.
+
+This script drives Discord with hardcoded screen coordinates (677,470 /
+620,486 / 250,245 / 487,512) captured from one specific window size on one
+machine. It breaks on any resolution, DPI or window-size change, and it needs
+the window in the foreground, which a scheduled task cannot reliably do.
+
+Use `sookastage_prod.py` instead: it finds elements in the DOM, verifies each
+click actually landed, and does not need window focus.
+"""
 
 import ctypes, ctypes.wintypes as wt, time, sys, pyautogui, subprocess, json, socket, base64, os, struct, urllib.request
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
