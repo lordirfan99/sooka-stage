@@ -5,7 +5,7 @@
 .DESCRIPTION
     `--remote-debugging-port` is only honoured at process start, so this must launch the
     executable directly (or from a shortcut carrying the same arguments). If Discord has
-    auto-updated, the app-* directory name changes — update the paths below, or the
+    auto-updated, the app-* directory name changes - update the paths below, or the
     script will report which version directories actually exist.
 
 .PARAMETER Stream
@@ -66,5 +66,5 @@ try {
     $pages = $targets | Where-Object { $_.type -eq 'page' }
     foreach ($p in $pages) { Write-Output ("page " + $p.url.Substring(0, [Math]::Min(70, $p.url.Length))) }
 } catch {
-    Write-Output "CDP NOT UP on port $($cfg.Port) — client may have exited (Canary 1.0.1177 is known for this)"
+    Write-Output "CDP NOT UP on port $($cfg.Port) - client may have exited (Canary 1.0.1177 is known for this)"
 }

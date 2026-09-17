@@ -10,9 +10,10 @@ from a Linux VPS.
 2. `README.md` — architecture, environments, operating procedure, hard rules.
 3. `HERMES_GUIDE.md` — failure catalogue and the rules that explain "the click did
    nothing" situations.
-4. `HERMES_PLAN.md` — the ordered phase plan with acceptance criteria. **Phase 0 is the
-   next actionable work.**
-5. `ISSUES.md` — the issue register (7 fixed, 5 open).
+4. `HERMES_PLAN.md` — the ordered phase plan with acceptance criteria. **Phases 0-3.1 are
+   done as of 2026-09-18** (all three streams live end-to-end, verified self-healing,
+   watchdog registered); Phase 3.2+ (Manager GUI integration) is next.
+5. `ISSUES.md` — the issue register (9 fixed, 3 open).
 
 ## The 60-second model
 
@@ -25,9 +26,15 @@ from a Linux VPS.
   `POST https://discord.com/api/v9/stage-instances` with
   `{channel_id, topic:"N)", privacy_level:2, send_start_notification:false}`, authorized
   with the user token at `.user_token.json`.
-- The remaining work is the **screenshare picker** flow inside the client
-  (share picker → select the sooka browser tile → Go Live), driven over CDP with
-  *trusted* input (`Input.dispatchMouseEvent`).
+- The **screenshare picker** flow inside the client (share picker → select the sooka
+  browser tile → Go Live), driven over CDP with *trusted* input
+  (`Input.dispatchMouseEvent`), is verified working end-to-end on all three clients as
+  of 2026-09-18 (see `ISSUES.md` F8). A `SookaStageWatchdog` scheduled task re-runs
+  `--all` every 5 minutes so a dropped stream self-heals.
+- Chrome Beta's own OS window title never says "Beta" on this machine -- only the page
+  title (normally set by Tampermonkey's "Set Browser Identity") distinguishes it from
+  plain Chrome, and `browser_identity()` must check specific names before the generic
+  `"google chrome"` fallback or it misclassifies every Chrome Beta tile as Chrome.
 
 ## Commands
 

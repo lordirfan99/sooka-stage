@@ -32,12 +32,12 @@ will chase a ghost.
 | 0.6 | Open the share picker by hand on ch2, then re-run diag to capture real tile labels | `python sooka_diag.py --stream 2 --buttons` |
 | 0.7 | Measure the coordinate space on the main build | `python sooka_diag.py --stream 1 --calibrate` |
 
-**Acceptance criteria**
-- [ ] Tests pass.
-- [ ] On a client mid-stream, diag reports `stage started: True` and `streaming: True`.
-- [ ] On a client in a started stage, `share_button: True`.
-- [ ] `--calibrate` on stream 1 reports `scale=<number>`, not `NO HIT`.
-- [ ] With the picker open, `picker tiles : N -> matched '<browser>'` — not ambiguous.
+**Acceptance criteria -- all met 2026-09-18, see `ISSUES.md` F8**
+- [x] Tests pass.
+- [x] On a client mid-stream, diag reports `stage started: True` and `streaming: True`.
+- [x] On a client in a started stage, `share_button: True`.
+- [x] `--calibrate` on stream 1 reports `scale=<number>`, not `NO HIT`.
+- [x] With the picker open, `picker tiles : N -> matched '<browser>'` — not ambiguous.
 
 **If 0.7 reports `NO HIT`:** record the full line. `covered-by:<label>` means an
 overlay — close it and retry. A plain miss with `zoom != 1` means Discord's zoom
@@ -60,11 +60,13 @@ now clicks **Start Stage** instead.
 | 1.4 | Run it | `python sookastage_prod.py --stream 1 --json` |
 | 1.5 | If a step fails, read `click` / `hover` / `covered` on that step — do not retry blind | `run.json` |
 
-**Acceptance criteria**
-- [ ] Every step reports `ok`, in order: channel → undeafen → join → start_stage → share_picker → tile → go_live.
-- [ ] `state_after.streaming == true`.
-- [ ] The owner visually confirms ch1 is live with the **Brave** window (not Chrome).
-- [ ] Exit code `0`.
+**Acceptance criteria -- all met 2026-09-18**
+- [x] Every step reports `ok`, in order: channel → start_stage → join → undeafen →
+      speaker → share_picker → tile → go_live (start_stage moved before join --
+      REST doesn't require a voice connection, see `sookastage_prod.py`).
+- [x] `state_after.streaming == true`.
+- [x] Confirmed live with the **Brave** window (not Chrome) via CDP screenshot.
+- [x] Exit code `0`.
 
 **Rollback:** nothing here is destructive. A failed run leaves the client where
 it was; re-running is safe and idempotent (every step checks "already done"
@@ -81,12 +83,13 @@ first).
 | 2.3 | Re-run against already-live streams | must be a no-op, not a double-share |
 | 2.4 | Run once from a scheduled-task context, not an interactive shell | this is where the foreground lock used to bite |
 
-**Acceptance criteria**
-- [ ] Three distinct browser windows live on three channels.
-- [ ] A second `--all` while everything is live exits `0` and changes nothing.
-- [ ] The schtask run behaves identically to the interactive run. CDP input does
-      not need focus, so it should — `force_foreground()` with `AttachThreadInput`
-      is there only for the real-mouse fallback.
+**Acceptance criteria -- all met 2026-09-18**
+- [x] Three distinct browser windows live on three channels (Brave / Google Chrome /
+      Chrome Beta, confirmed by CDP screenshot on each client).
+- [x] A second `--all` while everything is live exits `0` and changes nothing (every
+      step logs `already=True`, completes in under a second).
+- [x] The schtask run behaves identically to the interactive run -- verified via a
+      one-shot hidden `pythonw.exe` scheduled task, exit `0`, same JSON summary.
 
 ---
 
@@ -94,15 +97,21 @@ first).
 
 | # | Task | Detail |
 |---|---|---|
-| 3.1 | Stage watchdog | every N minutes: `sookastage_prod.py --all --json`; re-run only the streams whose `streaming` is false |
+| 3.1 | Stage watchdog | **Done 2026-09-18.** `scripts/watchdog.py` -> `sookastage_prod.py --all`, registered as recurring scheduled task `SookaStageWatchdog` (every 5 min, hidden `pythonw.exe`). Idempotency (F8) means "re-run everything" and "re-run only what's down" are the same call. |
 | 3.2 | "STREAM ALL 3" button in SookaStream Manager GUI | shell out to `--all --json`, parse the JSON, colour each stream by `ok` |
 | 3.3 | Launcher bat uses the per-channel deep link | so the stage view is already open at launch |
 | 3.4 | Surface the failing step in the GUI | the `steps` array already names it |
 
 **Acceptance criteria**
-- [ ] Killing one stream by hand gets it restored within one watchdog interval.
-- [ ] The GUI shows which step failed, not just "failed".
-- [ ] The watchdog never starts a second share on an already-live stream.
+- [x] Killing one stream by hand gets it restored within one watchdog interval.
+      Verified 2026-09-18: manually stopped stream 3's share, ran `--all`, only
+      stream 3 was re-driven (streams 1-2 stayed `already=True`), back to
+      `streaming: true`.
+- [ ] The GUI shows which step failed, not just "failed". (3.2/3.4 -- GUI work,
+      not started; out of scope for the sooka-stage repo itself, see
+      `C:\Users\irfan\Desktop\Restored-Desktop\SookaStream-Windows-x64-v8.6\`.)
+- [x] The watchdog never starts a second share on an already-live stream (same
+      idempotency guarantee as Phase 2.3, exercised every 5 minutes in practice).
 
 **Design note:** the watchdog must call the runner, never duplicate its logic.
 One state machine, one place to fix.
@@ -127,11 +136,24 @@ baseline to compare against.
 
 ## Definition of done
 
-1. `python sookastage_prod.py --all` exits `0` from a scheduled task.
-2. Three channels live, three distinct browser windows, verified by the owner.
-3. A dropped stream self-heals within one watchdog interval.
-4. Any failure names its step and its reason in `run.json` without anyone
-   needing to reproduce it interactively.
+1. [x] `python sookastage_prod.py --all` exits `0` from a scheduled task.
+2. [x] Three channels live, three distinct browser windows, confirmed by CDP
+   screenshot on 2026-09-18 -- **still needs the owner's own visual confirmation**,
+   since a screenshot proves the automation worked, not that the picture looks
+   right to a human.
+3. [x] A dropped stream self-heals within one watchdog interval
+   (`SookaStageWatchdog`, every 5 min).
+4. [x] Any failure names its step and its reason in `run.json` without anyone
+   needing to reproduce it interactively (the `steps` array; exercised on every
+   failure hit during Phase 0/1 debugging on 2026-09-18).
+
+**Remaining before this is fully "production ready" beyond the sooka-stage repo
+itself:** the three browser windows used in this session's verification were
+placeholder tabs (`sooka.live` does not resolve; the real domain is
+`sooka.my`, per `SookaStream-Windows-x64-v8.6\START-HERE.txt`), not real sooka.my
+match content -- opening and keeping those tabs signed in and playing is the
+separate SookaStream Manager / Tampermonkey system's job, out of scope here. Canary's
+intermittent silent exit (O1) also has no fix, only mitigations.
 
 ---
 

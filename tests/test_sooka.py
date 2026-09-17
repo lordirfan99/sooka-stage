@@ -126,6 +126,14 @@ class TestTileChoice(unittest.TestCase):
         self.assertEqual(browser_identity("sooka - Chrome Beta"), "chrome beta")
         self.assertEqual(browser_identity("sooka - Google Chrome"), "google chrome")
 
+    def test_chrome_beta_wins_when_label_also_contains_google_chrome(self):
+        # Chrome Beta's own OS window title suffix on this machine is
+        # "- Google Chrome" (no "Beta"), so a real Chrome Beta tile's label
+        # contains BOTH phrases: "sooka - Chrome Beta - Google Chrome".
+        # "google chrome" is the longer string but must NOT win here.
+        self.assertEqual(
+            browser_identity("sooka - Chrome Beta - Google Chrome"), "chrome beta")
+
     def test_ambiguous_browser_name_refuses(self):
         index, reason = choose_tile(self.TILES, "Chrome")
         self.assertIsNone(index)
