@@ -307,7 +307,7 @@ class CDP:
                 "Upgrade: websocket\r\n"
                 "Connection: Upgrade\r\n"
                 f"Sec-WebSocket-Key: {key}\r\n"
-                "Sec-WebSocket-Version: 13\r\n\r\n"
+                "Sec-WebSocket-Version: 13\r\n" "\r\n"
             ).encode()
         )
         resp = b""
