@@ -299,7 +299,7 @@ class StageFlow:
             except CDPError as exc:
                 log(f"    topic field skipped: {exc}")
 
-        res = self.cdp.click(by_label(SELECTORS["start_stage"], max_len=40))
+        res = self.cdp.click(by_label(SELECTORS["start_stage"], max_len=80))
         ok = self.wait_state("share_button", timeout=25)
         if not ok:
             st = self.state()
