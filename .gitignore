@@ -4,3 +4,21 @@ __pycache__/
 *.png
 diag.json
 run.json
+
+# local artifacts (never commit)
+run*.json
+*.exe
+*.bundle
+*_probe*.py
+probe_*.py
+inspect_*.py
+methods.py
+check_*.py
+fix_*.py
+patch_*.py
+*.ps1
+canary_installer.exe
+stable_installer.exe
+launch_*.cmd
+commit_*.cmd
+doc_*.cmd
