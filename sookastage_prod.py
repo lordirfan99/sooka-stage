@@ -28,6 +28,9 @@ import argparse
 import json
 import os
 import sys
+import time
+import urllib.error
+import urllib.request
 
 from sooka_cdp import (
     CDP,
@@ -45,31 +48,37 @@ except Exception:
     pass
 
 GUILD_ID = "1251553669644816518"
+TOKEN_PATH = r"C:\Users\irfan\SookaStage\.user_token.json"
 
 STREAMS = {
     1: {"port": 9223, "client": "Discord (stable)", "browser": "Brave",
         "channel": "1477692113738137600"},
-    2: {"port": 9225, "client": "Canary", "browser": "Chrome Beta",
+    2: {"port": 9225, "client": "Canary", "browser": "Google Chrome",
         "channel": "1481358977584599283"},
-    3: {"port": 9224, "client": "PTB", "browser": "Google Chrome",
+    3: {"port": 9224, "client": "PTB", "browser": "Chrome Beta",
         "channel": "1481359453759475876"},
 }
 
 # Every label the flow matches on, in one place.
 SELECTORS = {
     "deafen_on": r"^\s*undeafen",          # this button exists only WHILE deafened
-    "start_stage": r"start stage|start the stage",
-    "continue_without": r"continue without starting",
     "share": r"share your screen",
     "golive": r"go live",
     "stop": r"stop streaming",
     "join_stage": r"join stage|join channel",
+    "speak_on_stage": r"^\s*speak on stage",
 }
 
-# Known browser identities for picker-tile disambiguation. Longest match wins,
-# so "Google Chrome" never collides with "Chrome Beta".
-KNOWN_BROWSERS = ["brave", "chrome beta", "google chrome", "chromium",
-                  "microsoft edge", "firefox", "opera"]
+# Known browser identities for picker-tile disambiguation, most specific first.
+# "google chrome" must be checked LAST: Chrome Beta's own OS window title on
+# this machine is "<page title> - Google Chrome" (no "Beta" in the native
+# suffix -- only the page title carries that, via Tampermonkey's "Set Browser
+# Identity"), so a Chrome Beta tile's label legitimately contains BOTH
+# "chrome beta" and "google chrome" as substrings. Picking the longest match
+# (13 chars for "google chrome" vs 11 for "chrome beta") silently reclassified
+# every Chrome Beta tile as plain Chrome -- this order fixes that.
+KNOWN_BROWSERS = ["brave", "chrome beta", "chromium",
+                  "microsoft edge", "firefox", "opera", "google chrome"]
 
 LOG_PATH = os.environ.get("SOOKASTAGE_LOG") or (
     r"C:\Users\irfan\sookastage_prod.log" if os.name == "nt"
@@ -126,15 +135,16 @@ STATE_JS = r"""
     ready: !!document.querySelector('[class*=panels]'),
     dialog: dlgText ? dlgText.slice(0, 240) : null,
     topic_modal: !!(dlgText && /start the stage|stage topic|topic/i.test(dlgText)) && any(/start stage/i),
-    deaf_modal: /server deafened|you are deafened|undeafen to speak/i.test(txt),
+    deaf_modal: !!(dlgText && /server deafened|you are deafened|undeafen to speak/i.test(dlgText)),
     deafened: any(/^\s*undeafen/i),
     muted: any(/^\s*unmute/i),
     can_start_stage: any(/start stage|start the stage/i),
     continue_without: any(/continue without starting/i),
     join_stage: any(/join stage/i),
+    speak_on_stage: any(/^\s*speak on stage/i),
     share_button: any(/share your screen/i),
     golive: any(/go live/i),
-    picker_open: !!(dlgText && /screen|application|window/i.test(dlgText)) && any(/go live/i),
+    picker_open: !!(dlgText && /applications|entire screen|devices/i.test(dlgText)),
     streaming: any(/stop streaming/i) || /stop streaming/i.test(txt),
     sooka_panel: /watch online live sports/i.test(txt),
     buttons: labels.slice(0, 70)
@@ -166,7 +176,8 @@ TILE_JS = r"""
 # Tile disambiguation (pure, unit-tested)
 # --------------------------------------------------------------------------
 def browser_identity(label: str):
-    """Longest known browser phrase contained in `label`, or None.
+    """First known browser phrase contained in `label` (checked most-specific
+    first, see KNOWN_BROWSERS), or None.
 
     All sooka windows share the page title "Watch online Live Sports, sooka",
     so the browser suffix is the only discriminator -- and a naive
@@ -174,8 +185,7 @@ def browser_identity(label: str):
     how two streams ended up sharing one window.
     """
     low = (label or "").lower()
-    hits = [b for b in KNOWN_BROWSERS if b in low]
-    return max(hits, key=len) if hits else None
+    return next((b for b in KNOWN_BROWSERS if b in low), None)
 
 
 def choose_tile(tiles, browser: str):
@@ -196,6 +206,40 @@ def choose_tile(tiles, browser: str):
             return sooka[0], f"matched '{want}' + sooka page title"
         return None, f"{len(matches)} tiles match '{want}' -- refusing to guess: {[tiles[i] for i in matches]}"
     return matches[0], f"matched '{want}'"
+
+
+def start_stage_rest(channel_id: str, topic: str):
+    """POST /stage-instances -- starts the stage without touching the UI modal.
+
+    ISSUES.md F1: the modal's click can never register (Windows foreground lock
+    in a scheduled-task/service context, plus a controlled React input that only
+    enables its submit button after a real `input` event). The token is read
+    from TOKEN_PATH and never logged.
+    """
+    try:
+        with open(TOKEN_PATH, encoding="utf-8") as fh:
+            token = json.load(fh)["discord_user_token"]
+    except (OSError, KeyError, ValueError) as exc:
+        return False, f"token unavailable: {exc}"
+
+    body = json.dumps({
+        "channel_id": channel_id, "topic": topic,
+        "privacy_level": 2, "send_start_notification": False,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        "https://discord.com/api/v9/stage-instances", data=body, method="POST",
+        headers={"Authorization": token, "User-Agent": "Mozilla/5.0",
+                 "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return True, f"http {resp.status}"
+    except urllib.error.HTTPError as exc:
+        if exc.code == 400:
+            return True, "http 400 (likely already started)"
+        return False, f"http {exc.code}"
+    except urllib.error.URLError as exc:
+        return False, f"connect error: {exc.reason}"
 
 
 # --------------------------------------------------------------------------
@@ -262,53 +306,94 @@ class StageFlow:
         ok = self.wait_state("deafened", timeout=8, want=False)
         return self.record("undeafen", ok, needed=True, click=res.get("reason"))
 
-    def ensure_in_stage(self):
+    def ensure_stage_started(self):
+        """Root cause #3 (ISSUES.md F1): the UI modal can never be clicked
+        programmatically. Start the stage over the REST API instead, and poll
+        the client's own state until the 'start stage' banner clears -- that
+        banner (not the Share button, which needs a voice join first) is what
+        confirms the instance actually exists.
+        """
         st = self.state()
-        if st.get("share_button") or st.get("streaming") or st.get("topic_modal") or st.get("can_start_stage"):
+        if not (st.get("can_start_stage") or st.get("continue_without")):
+            return self.record("start_stage", True, already=True)
+
+        ok_rest, reason = start_stage_rest(self.cfg["channel"], self.topic)
+        if not ok_rest:
+            return self.record("start_stage", False, rest=reason)
+
+        ok = self.cdp.wait_for(
+            lambda: (lambda s: (not s.get("can_start_stage") and not s.get("continue_without"))
+                     or s.get("share_button") or s.get("streaming") or None)(self.state()),
+            timeout=25, desc="stage started",
+        )
+        if not ok:
+            st = self.state()
+            return self.record("start_stage", False, rest=reason, dialog=st.get("dialog"))
+        return self.record("start_stage", True, rest=reason)
+
+    def ensure_in_stage(self):
+        """The 'start stage'/'continue without' banner shows even when we have
+        never joined the stage's voice channel -- it is not evidence of being
+        in the stage. 'Join Stage' (tracked as `join_stage` in STATE_JS) is:
+        present means we still need to click it, absent means we are in."""
+        st = self.state()
+        if st.get("share_button") or st.get("streaming"):
             return self.record("join", True, already=True)
+        if not st.get("join_stage"):
+            return self.record("join", True, already=True, note="no Join Stage button")
         # Joining is not activation-gated, so a synthetic click is fine here
         # (this is the `li -> a.click()` path already proven to work).
         res = self.cdp.js_click(by_href(self.cfg["channel"]))
         if not res["ok"]:
             res = self.cdp.click(by_label(SELECTORS["join_stage"]), trusted_only=False)
         ok = self.cdp.wait_for(
-            lambda: (lambda s: s.get("can_start_stage") or s.get("topic_modal")
-                     or s.get("share_button") or s.get("streaming") or None)(self.state()),
+            lambda: (lambda s: (not s.get("join_stage")) or s.get("share_button")
+                     or s.get("streaming") or None)(self.state()),
             timeout=25, desc="join stage",
         )
         return self.record("join", bool(ok), via=res.get("reason"))
 
-    def ensure_stage_started(self):
-        """Root cause #3 -- and the v1 logic bug.
+    def ensure_speaker(self):
+        """Joining a stage puts you in the audience. 'Share Your Screen' only
+        exists for a speaker, so claim the speaker slot via 'Speak on Stage'
+        (available directly, without a request/approve round-trip, when the
+        account has stage-moderator permission on this channel).
 
-        'Share Your Screen' does not exist until the stage is STARTED. v1
-        clicked 'Continue without starting', which is the one branch that
-        guarantees it never appears. We click 'Start Stage' instead.
+        The audience panel takes a moment to render right after joining, so
+        checking `speak_on_stage` with zero delay (as this used to) reads a
+        stale state and wrongly concludes "already a speaker" -- worse,
+        `share_button`/`streaming` can themselves flicker true for a single
+        frame right after the join click before settling back to audience,
+        so even an immediate check of *those* is not safe. Always poll first;
+        never trust a same-frame read here.
         """
+        self.cdp.wait_for(
+            lambda: (True if (lambda s: s.get("speak_on_stage") or s.get("share_button")
+                     or s.get("streaming"))(self.state()) else None),
+            timeout=8, desc="speak-on-stage render",
+        )
+        # Re-read and act on `speak_on_stage` first: right after joining, Discord
+        # can optimistically flicker share_button/streaming true for a frame
+        # before settling into the real (audience) state, and trusting that
+        # flicker here means the click that actually claims the speaker slot
+        # never happens. A currently-visible "Speak on Stage" button is the
+        # ground truth -- click it whenever it is there.
         st = self.state()
+        if st.get("speak_on_stage"):
+            res = self.cdp.click(by_label(SELECTORS["speak_on_stage"]), trusted_only=False)
+            ok = self.cdp.wait_for(
+                lambda: (lambda s: (not s.get("speak_on_stage")) or s.get("share_button")
+                         or s.get("streaming") or None)(self.state()),
+                timeout=15, desc="become speaker",
+            )
+            return self.record("speaker", bool(ok), click=res.get("reason"))
         if st.get("share_button") or st.get("streaming"):
-            return self.record("start_stage", True, already=True)
-
-        if st.get("topic_modal") and self.topic:
-            try:
-                field = self.cdp.find("true", selector="[role=dialog] input,[role=dialog] textarea")
-                if field.get("count"):
-                    self.cdp.click("true", selector="[role=dialog] input,[role=dialog] textarea",
-                                   trusted_only=False, found=field)
-                    self.cdp.insert_text(self.topic)
-            except CDPError as exc:
-                log(f"    topic field skipped: {exc}")
-
-        res = self.cdp.click(by_label(SELECTORS["start_stage"], max_len=80))
-        ok = self.wait_state("share_button", timeout=25)
-        if not ok:
-            st = self.state()
-            return self.record("start_stage", False, click=res.get("reason"),
-                               hover=res.get("hover"), covered=res.get("covered"),
-                               dialog=st.get("dialog"))
-        return self.record("start_stage", True, click=res.get("reason"), scale=res.get("scale"))
+            return self.record("speaker", True, already=True)
+        return self.record("speaker", True, already=True, note="no Speak on Stage button")
 
     def open_picker(self):
+        if self.state().get("streaming"):
+            return self.record("share_picker", True, already=True)
         res = self.cdp.click(by_label(SELECTORS["share"]))  # activation-gated: trusted only
         ok = self.wait_state("picker_open", timeout=20)
         return self.record("share_picker", ok, click=res.get("reason"),
@@ -317,6 +402,8 @@ class StageFlow:
 
     def select_tile(self):
         """Root cause #5: tiles differ only by browser suffix."""
+        if self.state().get("streaming"):
+            return self.record("tile", True, already=True)
         probe = self.cdp.wait_for(
             lambda: (lambda d: d if isinstance(d, dict) and d.get("tiles") else None)(
                 self.cdp.evaluate_json(TILE_JS)),
@@ -327,15 +414,32 @@ class StageFlow:
         if index is None:
             return self.record("tile", False, reason=reason, tiles=tiles)
         target = tiles[index]
+        tile_selector = ("[role=dialog] button,[role=dialog] [role=button],"
+                          "[role=dialog] [role=listitem],[role=dialog] [role=option]")
         pred = (
             f"{LABEL_JS} === {json.dumps(target)} && !!el.closest('[role=dialog]') "
             "&& el.getBoundingClientRect().width >= 60"
         )
-        res = self.cdp.click(pred, selector="[role=dialog] button,[role=dialog] [role=button],"
-                                            "[role=dialog] [role=listitem],[role=dialog] [role=option]")
+        # find()'s visibility check requires the element to intersect the
+        # current viewport, but the tile grid scrolls and the matched tile is
+        # often below the fold (this is what "not-found" meant even though
+        # TILE_JS -- which has no viewport check -- listed it just fine).
+        # Scroll it into view first, by exact label match (same LABEL_JS the
+        # click predicate uses), then give layout a moment to settle.
+        self.cdp.evaluate(
+            f"(() => {{ const els = Array.prototype.slice.call("
+            f"document.querySelectorAll({json.dumps(tile_selector)})); "
+            f"const el = els.find(el => {LABEL_JS} === {json.dumps(target)}); "
+            "if (el) el.scrollIntoView({block: 'center', inline: 'center'}); "
+            "return !!el; })()"
+        )
+        time.sleep(0.3)
+        res = self.cdp.click(pred, selector=tile_selector)
         return self.record("tile", res["ok"], tile=target, reason=reason, click=res.get("reason"))
 
     def go_live(self):
+        if self.state().get("streaming"):
+            return self.record("go_live", True, already=True)
         res = self.cdp.click(by_label(SELECTORS["golive"], in_dialog=True, max_len=40))
         if not res["ok"]:
             res = self.cdp.click(by_label(SELECTORS["golive"], max_len=40))
@@ -344,8 +448,9 @@ class StageFlow:
                            covered=res.get("covered"))
 
     def run(self):
-        for step in (self.ensure_channel, self.ensure_undeafened, self.ensure_in_stage,
-                     self.ensure_stage_started, self.open_picker, self.select_tile, self.go_live):
+        for step in (self.ensure_channel, self.ensure_stage_started, self.ensure_in_stage,
+                     self.ensure_undeafened, self.ensure_speaker,
+                     self.open_picker, self.select_tile, self.go_live):
             if not step().ok:
                 return False
         return True

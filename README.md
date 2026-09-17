@@ -4,10 +4,12 @@ Automation that mirrors three live **sooka.live** match streams into three Disco
 **Stage channels** in parallel, one stream per Discord client, driven from a Linux
 VPS against the owner's Windows PC over Tailscale.
 
-**Status:** Partial. The stage *lifecycle* (start / edit / stop, topic, state
-queries) is fully automated and verified against all three channels. The
-*screenshare picker* flow (open picker → select the sooka browser tile → Go Live)
-is implemented but not yet verified end-to-end on every client. See
+**Status:** Core automation done. The stage *lifecycle* (start / edit / stop, topic,
+state queries) and the *screenshare picker* flow (open picker → select the sooka
+browser tile → Go Live) are both automated and verified end-to-end on all three
+clients as of 2026-09-18, including idempotent re-runs and self-healing via a
+5-minute watchdog (`SookaStageWatchdog`). Open items are Canary's intermittent
+silent exit (O1) and Manager GUI integration (Phase 3.2+). See
 [`ISSUES.md`](ISSUES.md) for the open list.
 
 ---
@@ -83,9 +85,8 @@ Guild: `1251553669644816518` (SportManiaMY).
    window tile.
 5. **Go Live** — confirm; the stage shows the live speaker with a screen thumbnail.
 
-Steps 1–3 are automated and verified. Steps 4–5 are implemented in
-`sookastage_prod.py` and need a live run to confirm selector coverage on each build
-(see [`HERMES_PLAN.md`](HERMES_PLAN.md) Phase 0).
+All five steps are automated and verified end-to-end on all three clients
+(see [`ISSUES.md`](ISSUES.md) F8 for the fixes that got steps 4-5 working).
 
 ---
 
@@ -109,7 +110,8 @@ sooka-stage/
 ├── port_check.py             target listing helper
 ├── win_enum.ps1              enumerate visible top-level windows (diagnostics)
 ├── main40.py                 DEPRECATED — hardcoded pixel coordinates, kept as record
-├── scripts/                  PC-side helpers (token refresh, hidden screenshot, schtask)
+├── scripts/                  PC-side helpers (token refresh, hidden screenshot, schtask,
+│                              watchdog.py -- Phase 3.1 self-heal, run via SookaStageWatchdog)
 └── tests/                    regression tests — run anywhere, Discord not required
 ```
 
@@ -313,3 +315,4 @@ Detailed write-ups live in [`ISSUES.md`](ISSUES.md). Summary:
 |---|---|
 | 2026-09-16 | CDP research: bot API cannot screenshare, self-bot rejected (ToS), UIA limited to PTB → pivot to CDP on 9223/9224/9225. First successful end-to-end share on the stable client. |
 | 2026-09-17 | Stage start moved to REST (modal bypass proven on all three channels). Token extraction via CDP network sniff. Canary installer/updater corruption diagnosed and fixed. OpenCode CLI installed on the PC (model `omen/omen-alpha`). At-logon console tasks disabled. Full documentation set written for handover. |
+| 2026-09-18 | Share-picker flow fixed and verified end-to-end on all three clients (speaker-render race, `picker_open` detection, Chrome-Beta-vs-Chrome tile misclassification, off-screen tile clicks, re-run idempotency -- see `ISSUES.md` F8). Verified identical from a hidden scheduled-task context. Self-heal verified by manually dropping a stream and re-running `--all`. Registered `SookaStageWatchdog` (every 5 min) for Phase 3.1. Deleted 67 stale one-shot scheduled tasks, kept 6 (F9). |

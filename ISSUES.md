@@ -1,6 +1,6 @@
 # SookaStage — Issue Register
 
-Updated: 2026-09-17 (UTC+8). Each entry: symptom → root cause → resolution → evidence.
+Updated: 2026-09-18 (UTC+8). Each entry: symptom → root cause → resolution → evidence.
 
 ---
 
@@ -95,6 +95,61 @@ WebSocket sessions.
 sessions leave half-open state.
 **Resolution.** One `/json` call and one persistent WebSocket per run, closed explicitly.
 
+### F8 — Share-picker flow verified end-to-end on all three clients
+**Symptom.** `open_picker()`/`select_tile()`/`go_live()` were written from recorded
+behaviour and had never been matched against a live client (O2, below).
+**Root causes found running Phase 0 live** (all in `sookastage_prod.py`):
+1. `ensure_speaker()` read `speak_on_stage`/`share_button` with zero delay right after
+   the join click. Discord's audience panel takes a moment to render, and
+   `share_button`/`streaming` can themselves flicker `true` for a single frame before
+   settling back to audience -- trusting either same-frame read skipped the "Speak on
+   Stage" click entirely, leaving the account in the audience with no Share button.
+2. `STATE_JS.picker_open` required a `[role=dialog]` **and** an existing "Go Live"
+   button. On this build the share picker's own dialog never gets a `[role=dialog]`
+   Go-Live button until *after* a tile is picked, so `picker_open` was always false and
+   every run timed out waiting for it.
+3. `browser_identity()` picked the **longest** matching browser phrase. Chrome Beta's
+   own OS window title suffix on this machine is `"<title> - Google Chrome"` (no
+   "Beta") -- only the page title carries the identity marker (normally injected by
+   Tampermonkey's "Set Browser Identity") -- so a real Chrome Beta tile's label
+   contains *both* `"chrome beta"` and `"google chrome"`, and the longer string
+   (`"google chrome"`) silently won, reclassifying every Chrome Beta tile as plain
+   Chrome.
+4. `find()`'s visibility check (`sooka_cdp.py`) requires the element to intersect the
+   current viewport. The tile grid scrolls, and the matched tile is frequently below
+   the fold -- reported as `click='not-found'` even though `TILE_JS` (which has no
+   viewport check) listed the tile correctly.
+5. `open_picker()` / `select_tile()` / `go_live()` had no "already streaming" guard, so
+   re-running against an already-live stream failed at the picker step instead of being
+   a no-op (HERMES_PLAN.md Phase 2.3).
+**Resolution.** Poll for `speak_on_stage` before deciding it doesn't exist and act on it
+first when present; loosened `picker_open` to the picker's own tab-bar text instead of
+requiring Go Live; made `browser_identity()` check specific names before the generic
+`"google chrome"` fallback (see `tests/test_sooka.py::test_chrome_beta_wins_when_label_also_contains_google_chrome`);
+`scrollIntoView()` the matched tile before clicking it; added an "already streaming"
+short-circuit to all three trailing steps.
+**Evidence.** 2026-09-18: all three streams (`Discord stable/9223`, `Canary/9225`,
+`PTB/9224`) reached `streaming: true` end-to-end, confirmed by screenshot (LIVE badge,
+"Sharing their screen"). `--all` re-run against three already-live streams: every step
+`already=True`, exit `0`, in under a second. Verified identical from a hidden
+`pythonw.exe` scheduled-task context (Phase 2.4). Self-heal verified: manually stopped
+stream 3's share, re-ran `--all`, only stream 3 was re-driven (streams 1–2 untouched),
+back to `streaming: true`.
+
+### F9 — Scheduled-task hygiene
+**State.** ~73 `Sook*` tasks had accumulated on the PC (one-shot debugging iterations,
+several duplicating each other).
+**Resolution.** Audited every task's command line against what's actually current
+(`schtask_launch_client.ps1`, `sookastage_prod.py`); deleted 67, kept 6:
+`SookaStageProd`, `SookStage9223`/`9224`/`9225` (canonical per-client launchers),
+`SookaBootFix`/`SookaRenamer` (already `Disabled`, legitimate utilities). Deletion
+needed an elevated (but still silent -- `ConsentPromptBehaviorAdmin=0` on this machine)
+`Unregister-ScheduledTask`, since a plain non-elevated session gets `Access is denied`
+even for tasks it owns.
+**Follow-up.** Added `SookaStageWatchdog` (recurring, every 5 min, `pythonw.exe`,
+`/it`) running `scripts/watchdog.py` -> `sookastage_prod.py --all` for Phase 3.1
+self-healing. Not one-shot -- intentionally left registered.
+
 ---
 
 ## OPEN
@@ -107,30 +162,23 @@ after the installer repair (F3). No Crashpad report, no Windows Error Reporting 
 **Observations.** Last recorded activity before each exit is the voice/RTC region-latency
 test (`logs\discord-last-webrtc_0`). The only hard crash on this machine in the event log
 is Canary `1.0.1165` faulting inside `discord_media.node` (`0xc0000409`).
+**2026-09-18 update.** Launched via `schtask_launch_client.ps1 -Stream 2` at 00:28, still
+running and streaming live past 01:40 (70+ minutes) -- well beyond the documented 2–7
+minute window. Not closing this issue: it is intermittent and 70 minutes of one session
+is not proof it cannot recur, but it did not reproduce during this session's extended
+live run.
 **Assessment.** A defect in this Canary build on this machine, not an install problem.
 **Options.** (a) wait for the next Canary build; (b) host Stream 2 on a different client
 build; (c) wrap Canary in a restart watchdog that relaunches it and re-runs the stream
-start.
+start -- partially covered now by `SookaStageWatchdog` (F9), which re-runs the *stream*
+flow every 5 min but does not relaunch the *client process* if Canary itself exits.
 **Impact.** Stream 2 has no reliable host client today.
-
-### O2 — Share-picker flow not verified end-to-end
-**State.** `sookastage_prod.py` implements channel → undeafen → join → start_stage →
-share picker → tile → go live. Stage start is proven via REST; the picker/tile/Go-Live
-selectors have not been matched against a live client on every build.
-**Next step.** `HERMES_PLAN.md` Phase 0: run `python sooka_diag.py --buttons` on a client
-that is already in a started stage and reconcile real labels with `SELECTORS`.
 
 ### O3 — Screen-touching work needs the interactive session
 **Symptom.** From a plain SSH session, screen capture fails with *"The handle is
 invalid"*; `CopyFromScreen` returns blank/black; opencode run sees no windows.
 **Resolution pattern.** `schtasks /create … /it` + `pythonw.exe`, then delete the task.
 Documented in `scripts/README.md` and README §4.5.
-
-### O4 — Scheduled-task hygiene
-**State.** ~73 `Sook*` tasks accumulated on the PC, many one-shot leftovers. Several had
-*at logon* triggers (F4).
-**Next step.** Audit and delete everything obsolete; keep only tasks that are part of the
-final design, and ensure every one-shot task deletes itself after running.
 
 ### O5 — `voice_renamer` still drives channel names
 **State.** The renamer rewrites stage channel names to the live match titles, which is

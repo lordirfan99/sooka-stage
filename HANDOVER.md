@@ -1,8 +1,10 @@
 # SookaStage — Handover Brief
 
 **Audience:** an incoming engineer or AI agent (e.g. Claude) taking over this project.
-**Date:** 2026-09-17 (UTC+8).
-**Prepared by:** the operating agent on the Linux VPS.
+**Date:** 2026-09-18 (UTC+8).
+**Prepared by:** the operating agent on the Linux VPS (2026-09-17 baseline), updated by
+Claude Code running directly on the Windows PC (2026-09-18: share-picker flow fixed and
+verified live end-to-end, watchdog added).
 
 Read [`README.md`](README.md) first for architecture and procedure, then this brief
 for the current state and the immediate next actions.
@@ -42,21 +44,25 @@ python sookastage_prod.py --all --json     # target: one command, three live str
 | **PC subagent** | OpenCode CLI 1.18.31 installed (Node 24), default model `omen/omen-alpha` via a custom provider block that injects the `x-opencode-session` header. Smoke test returned `OMEN_PC_OK`. |
 | **Hidden-execution pattern** | Screenshots and windowless runs on the PC via `schtasks /it` + `pythonw.exe`. |
 
-### 2.2 Implemented but **not yet verified live**
+### 2.2 Verified live end-to-end (2026-09-18)
 
-- `sookastage_prod.py` state machine: channel → undeafen → join → start_stage →
-  share picker → tile selection → go live. Selectors and regexes were written from
-  recorded behaviour and have **not** been matched against every live client build.
-  This is exactly what Phase 0 of [`HERMES_PLAN.md`](HERMES_PLAN.md) is for.
+- `sookastage_prod.py` state machine: channel → start_stage → join → undeafen →
+  speaker → share picker → tile selection → go live. All three clients (stable/9223,
+  Canary/9225, PTB/9224) reached `streaming: true`, confirmed by CDP screenshot
+  (LIVE badge, "Sharing their screen"). Re-running `--all` against three already-live
+  streams is a clean no-op (every step `already=True`, exit `0`, under a second).
+  Verified identical from a hidden scheduled-task context. Self-heal verified: manually
+  stopped one stream's share, re-ran `--all`, only that stream was re-driven.
+  Five real bugs found and fixed doing this -- see `ISSUES.md` F8. A recurring
+  `SookaStageWatchdog` task (every 5 min) now runs this automatically.
 
 ### 2.3 Known open problems
 
 | # | Problem | Impact | Suggested next step |
 |---|---|---|---|
-| A | **Canary (`app-1.0.1177`) exits silently 2–7 minutes after launch.** Reproduced 5×: with flags, bare, `--disable-gpu`. No Crashpad report, no WER event, no `EventID 1000`. Last activity before exit is always the voice/RTC region-latency test; the only historical hard crash on this box was Canary `1.0.1165` faulting in `discord_media.node` (`0xc0000409`). | Stream 2 has no reliable host client | Wait for the next Canary build, or host Stream 2 on a different client (e.g. a second account on another build), or wrap Canary in a restart watchdog. |
-| B | **Share-picker flow not verified on every client** | Streams 1–3 cannot claim "unattended" yet | Run Phase 0 checks from `HERMES_PLAN.md` while a stage is live |
+| A | **Canary (`app-1.0.1177`) exits silently 2–7 minutes after launch.** Reproduced 5×: with flags, bare, `--disable-gpu`. No Crashpad report, no WER event, no `EventID 1000`. Last activity before exit is always the voice/RTC region-latency test; the only historical hard crash on this box was Canary `1.0.1165` faulting in `discord_media.node` (`0xc0000409`). 2026-09-18: ran 70+ min without recurring, but that is not proof it's gone -- still open. | Stream 2 has no reliable host client guarantee | Wait for the next Canary build, host Stream 2 on a different client, or wrap Canary's *process* in a restart watchdog (the new `SookaStageWatchdog` re-runs the *stream flow*, but does not relaunch Canary if it exits). |
 | C | **Interaction with a headless SSH context** | Screen APIs fail from SSH (`The handle is invalid`); opencode run from SSH sees a black screen | Always execute screen-touching work through `schtasks /it` (interactive session) |
-| D | **Scheduled-task hygiene** | The box accumulated ~73 `Sook*` tasks; two at-logon tasks (`SookaRenamer`, `SookaBootFix`) spawned visible windows on every reboot (**now disabled**) | Audit and delete obsolete one-shot tasks before the next phase |
+| D | **Real match content not wired up in this session's test** | The three browser tabs used to verify the share flow (2026-09-18) point at `sooka.live`, which does not resolve -- the real domain is `sooka.my` (`SookaStream-Windows-x64-v8.6\START-HERE.txt`). Opening real, signed-in, Tampermonkey-tagged sooka.my tabs is the separate SookaStream Manager's job, out of scope for this repo. | The mechanics (picker, tile match, go-live, idempotency) are proven; the content shown will be whatever's in those tabs |
 
 ---
 
