@@ -259,5 +259,63 @@ class TestEvaluateErrors(unittest.TestCase):
         self.assertIn("ReferenceError", str(ctx.exception))
 
 
+class TestRunLock(unittest.TestCase):
+    """The watchdog task and a hand-run --all overlapping is not theoretical:
+    it was observed live, two runs driving the same three clients at once."""
+
+    def setUp(self):
+        import tempfile
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, "test.lock")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_second_acquire_is_refused_while_held(self):
+        from sookastage_prod import RunLock
+        first = RunLock(self.path)
+        self.assertTrue(first.acquire())
+        self.addCleanup(first.release)
+        self.assertFalse(RunLock(self.path).acquire())
+
+    def test_lock_is_reusable_after_release(self):
+        from sookastage_prod import RunLock
+        first = RunLock(self.path)
+        self.assertTrue(first.acquire())
+        first.release()
+        second = RunLock(self.path)
+        self.assertTrue(second.acquire())
+        second.release()
+
+    def test_stale_lock_from_a_dead_pid_is_taken_over(self):
+        """A crashed run leaves its lock file behind. If that were honoured
+        forever the watchdog would never heal anything again."""
+        from sookastage_prod import RunLock
+        with open(self.path, "w") as fh:
+            fh.write("999999999")  # a PID that cannot be running
+        lock = RunLock(self.path)
+        self.assertTrue(lock.acquire())
+        lock.release()
+
+    def test_garbage_lock_file_does_not_wedge_the_runner(self):
+        from sookastage_prod import RunLock
+        with open(self.path, "w") as fh:
+            fh.write("not-a-pid")
+        lock = RunLock(self.path)
+        self.assertTrue(lock.acquire())
+        lock.release()
+
+    def test_release_without_acquire_is_harmless(self):
+        from sookastage_prod import RunLock
+        RunLock(self.path).release()  # must not raise
+
+    def test_context_manager_releases(self):
+        from sookastage_prod import RunLock
+        with RunLock(self.path) as lock:
+            self.assertTrue(lock.acquire())
+        self.assertTrue(RunLock(self.path).acquire())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
