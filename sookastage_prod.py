@@ -67,6 +67,7 @@ SELECTORS = {
     "stop": r"stop streaming",
     "join_stage": r"join stage|join channel",
     "speak_on_stage": r"^\s*speak on stage",
+    "dont_switch_device": r"^\s*don'?t switch\s*$",
 }
 
 # Known browser identities for picker-tile disambiguation, most specific first.
@@ -86,10 +87,13 @@ LOG_PATH = os.environ.get("SOOKASTAGE_LOG") or (
 )
 
 
+QUIET_STDOUT = False  # set True in main() for --json: keep stdout as pure JSON
+
+
 def log(message):
     import datetime
     line = f"{datetime.datetime.now():%Y-%m-%d %H:%M:%S} {message}"
-    print(line, flush=True)
+    print(line, file=sys.stderr if QUIET_STDOUT else sys.stdout, flush=True)
     try:
         with open(LOG_PATH, "a", encoding="utf-8", errors="replace") as fh:
             fh.write(line + "\n")
@@ -140,6 +144,7 @@ STATE_JS = r"""
     muted: any(/^\s*unmute/i),
     can_start_stage: any(/start stage|start the stage/i),
     continue_without: any(/continue without starting/i),
+    audio_device_prompt: any(/^\s*don'?t switch\s*$/i),
     join_stage: any(/join stage/i),
     speak_on_stage: any(/^\s*speak on stage/i),
     share_button: any(/share your screen/i),
@@ -391,9 +396,25 @@ class StageFlow:
             return self.record("speaker", True, already=True)
         return self.record("speaker", True, already=True, note="no Speak on Stage button")
 
+    def dismiss_audio_prompt_if_present(self):
+        """Windows' "New Audio Device Detected" toast (seen live: triggered by
+        an NVIDIA HDMI/audio device change) is not a `[role=dialog]` and isn't
+        gated by anything -- but it renders on top of the share picker and
+        eats the click, reported as `covered-by:New Audio Device Detected...`.
+        "Don't Switch" keeps the current audio route, which is always the
+        safe choice here (never silently change what device Discord uses)."""
+        if not self.state().get("audio_device_prompt"):
+            return
+        self.cdp.click(by_label(SELECTORS["dont_switch_device"]), trusted_only=False)
+        self.cdp.wait_for(
+            lambda: (True if not self.state().get("audio_device_prompt") else None),
+            timeout=5, desc="audio prompt dismiss",
+        )
+
     def open_picker(self):
         if self.state().get("streaming"):
             return self.record("share_picker", True, already=True)
+        self.dismiss_audio_prompt_if_present()
         res = self.cdp.click(by_label(SELECTORS["share"]))  # activation-gated: trusted only
         ok = self.wait_state("picker_open", timeout=20)
         return self.record("share_picker", ok, click=res.get("reason"),
@@ -434,6 +455,7 @@ class StageFlow:
             "return !!el; })()"
         )
         time.sleep(0.3)
+        self.dismiss_audio_prompt_if_present()
         res = self.cdp.click(pred, selector=tile_selector)
         return self.record("tile", res["ok"], tile=target, reason=reason, click=res.get("reason"))
 
@@ -542,6 +564,10 @@ def main(argv=None):
     # legacy positional form: sookastage_prod.py 9223 Brave
     ap.add_argument("legacy", nargs="*", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
+
+    global QUIET_STDOUT
+    if args.as_json:
+        QUIET_STDOUT = True  # keep stdout pure JSON for callers that parse it
 
     streams = list(args.stream or [])
     if args.all:
