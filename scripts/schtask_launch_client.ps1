@@ -4,9 +4,14 @@
 
 .DESCRIPTION
     `--remote-debugging-port` is only honoured at process start, so this must launch the
-    executable directly (or from a shortcut carrying the same arguments). If Discord has
-    auto-updated, the app-* directory name changes - update the paths below, or the
-    script will report which version directories actually exist.
+    executable directly (or from a shortcut carrying the same arguments).
+
+    Discord auto-updates and the app-* directory name changes with every update, so the
+    version is resolved at run time (highest app-<version> that actually contains the
+    exe) instead of being hard-coded. This used to be a hard-coded path per client and
+    broke silently the moment Canary updated 1.0.1177 -> 1.0.1181: the launcher reported
+    EXE NOT FOUND, stream 2 never came up, and the watchdog could not heal it because
+    the process could never start at all.
 
 .PARAMETER Stream
     1 = Discord stable (port 9223, ch1), 3 = PTB (port 9224, ch3), 2 = Canary (port 9225, ch2).
@@ -24,19 +29,19 @@ $GUILD = '1251553669644816518'
 
 $map = @{
     1 = @{
-        Exe     = "C:\Users\irfan\AppData\Local\Discord\app-1.0.9258\Discord.exe"
+        ExeName = "Discord.exe"
         Port    = 9223
         Channel = '1477692113738137600'
         Root    = "C:\Users\irfan\AppData\Local\Discord"
     }
     2 = @{
-        Exe     = "C:\Users\irfan\AppData\Local\DiscordCanary\app-1.0.1177\DiscordCanary.exe"
+        ExeName = "DiscordCanary.exe"
         Port    = 9225
         Channel = '1481358977584599283'
         Root    = "C:\Users\irfan\AppData\Local\DiscordCanary"
     }
     3 = @{
-        Exe     = "C:\Users\irfan\AppData\Local\DiscordPTB\app-1.0.1220\DiscordPTB.exe"
+        ExeName = "DiscordPTB.exe"
         Port    = 9224
         Channel = '1481359453759475876'
         Root    = "C:\Users\irfan\AppData\Local\DiscordPTB"
@@ -45,12 +50,43 @@ $map = @{
 
 $cfg = $map[$Stream]
 
-if (-not (Test-Path $cfg.Exe)) {
-    Write-Output "EXE NOT FOUND: $($cfg.Exe)"
-    Write-Output "Installed versions in $($cfg.Root):"
+# Newest installed build that actually has the exe. Sorted as [version], not as
+# text: "app-1.0.999" must not beat "app-1.0.1000". An update leaves the old
+# app-* directory behind but strips its exe, so Test-Path is the real filter.
+$candidates = Get-ChildItem $cfg.Root -Directory -Filter 'app-*' -ErrorAction SilentlyContinue |
+    ForEach-Object {
+        $exe = Join-Path $_.FullName $cfg.ExeName
+        if (Test-Path $exe) {
+            $v = $null
+            [void][version]::TryParse(($_.Name -replace '^app-', ''), [ref]$v)
+            [pscustomobject]@{ Version = $v; Exe = $exe; Name = $_.Name }
+        }
+    } | Sort-Object Version -Descending
+
+if (-not $candidates) {
+    Write-Output "NO USABLE BUILD in $($cfg.Root) (looking for $($cfg.ExeName))"
+    Write-Output "Directories present:"
     Get-ChildItem $cfg.Root -Directory -Filter 'app-*' -ErrorAction SilentlyContinue |
         Select-Object -ExpandProperty Name
     exit 1
+}
+
+$cfg.Exe = $candidates[0].Exe
+Write-Output "using build $($candidates[0].Name)"
+
+# Discord is single-instance: if a copy is already running WITHOUT the debug
+# port, launching again just hands off to that instance and our flags are
+# silently dropped. That is the normal state after an auto-update, because
+# Discord relaunches itself with its own arguments. So if the process exists
+# but the port is not listening, the old instance has to go first (by PID --
+# never taskkill /IM, which has killed unrelated helpers here before).
+$procName = [IO.Path]::GetFileNameWithoutExtension($cfg.ExeName)
+$running = @(Get-Process -Name $procName -ErrorAction SilentlyContinue)
+$portUp = @(Get-NetTCPConnection -LocalPort $cfg.Port -State Listen -ErrorAction SilentlyContinue)
+if ($running.Count -gt 0 -and $portUp.Count -eq 0) {
+    Write-Output "$procName running without port $($cfg.Port) - stopping $($running.Count) process(es) first"
+    foreach ($p in $running) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Seconds 3
 }
 
 $uri = "discord://-/channels/$GUILD/$($cfg.Channel)"
@@ -66,5 +102,5 @@ try {
     $pages = $targets | Where-Object { $_.type -eq 'page' }
     foreach ($p in $pages) { Write-Output ("page " + $p.url.Substring(0, [Math]::Min(70, $p.url.Length))) }
 } catch {
-    Write-Output "CDP NOT UP on port $($cfg.Port) - client may have exited (Canary 1.0.1177 is known for this)"
+    Write-Output "CDP NOT UP on port $($cfg.Port) - client may have exited (Canary has a history of this; see ISSUES.md O1)"
 }

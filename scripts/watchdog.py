@@ -26,7 +26,7 @@ sys.path.insert(0, r"C:\Users\irfan\Desktop\sooka-stage")
 
 LOG = r"C:\Users\irfan\sookastage_watchdog.log"
 
-with open(LOG, "a", encoding="utf-8", errors="replace") as fh:
+with open(LOG, "a", encoding="utf-8", errors="replace", buffering=1) as fh:
     sys.stdout = fh
     sys.stderr = fh
     import preflight
