@@ -32,9 +32,15 @@ from a Linux VPS.
   of 2026-09-18 (see `ISSUES.md` F8). A `SookaStageWatchdog` scheduled task re-runs
   `--all` every 5 minutes so a dropped stream self-heals.
 - Chrome Beta's own OS window title never says "Beta" on this machine -- only the page
-  title (normally set by Tampermonkey's "Set Browser Identity") distinguishes it from
-  plain Chrome, and `browser_identity()` must check specific names before the generic
-  `"google chrome"` fallback or it misclassifies every Chrome Beta tile as Chrome.
+  title (normally set by Tampermonkey's "Set Browser Identity", which is **not
+  installed** here) distinguishes it from plain Chrome, and `browser_identity()` must
+  check specific names before the generic `"google chrome"` fallback or it
+  misclassifies every Chrome Beta tile as Chrome. In place of Tampermonkey,
+  `scripts/watch_windows.py` tags that window's OS title via `SetWindowText`. The tag
+  is a window title, so **any page reload reverts it** — `select_tile()` re-applies it
+  immediately before reading tiles. Without a tag, Chrome and Chrome Beta produce
+  byte-identical picker labels and `choose_tile()` correctly refuses to guess (a
+  stalled stream, never a wrong one).
 
 ## Commands
 
@@ -50,6 +56,29 @@ python scripts\verify_token.py                # check it
 ```
 
 Exit code `0` means every requested stream reached the streaming state.
+
+## Order of the flow (getting this wrong looks like a click bug)
+
+`channel → join → undeafen → start_stage → speaker → picker → tile → go_live`.
+
+Starting the stage **before** joining creates an instance with zero speakers, and
+Discord auto-ends an empty stage within seconds: the POST returns 200, the instance is
+404 a moment later, the client shows "Start Stage" again, the account sits in
+**Audience**, and "Share Your Screen" never exists. Joining first also means the REST
+call is made as a connected moderator, which is what puts the account on stage as a
+speaker.
+
+Only one run at a time: `sookastage_prod.main()` takes a PID lock
+(`C:\Users\irfan\sookastage.lock`), so the 5-minute watchdog and a hand-run `--all`
+cannot drive the same clients at once. The loser exits 0.
+
+## One-click entry point
+
+`Desktop\Start SookaStage.bat` → `scripts/start_sookastage.ps1`: brings up the Manager
+dashboard (port 8080, the safe `.py` server — **never** the frozen
+`SookaStream-v8.16.exe`, which carries a live Discord gateway bot), the channel
+renamer, the three sooka.my watch windows, the three Discord clients, then `--all`.
+`scripts/preflight.py` is the same checks in Python, used by the watchdog.
 
 ## Non-negotiable rules
 
@@ -70,8 +99,18 @@ Exit code `0` means every requested stream reached the streaming state.
 
 ## Known blocker you will hit
 
-Canary `app-1.0.1177` exits silently 2–7 minutes after launch on this machine (no crash
-dump, no WER event; last activity is the voice/RTC latency test). The install itself is
-now healthy — reinstall with `/S` fixed an updater-state corruption. Options are: wait
-for the next Canary build, host Stream 2 elsewhere, or wrap Canary in a restart
-watchdog. Do not re-diagnose the installer; that part is done (see `ISSUES.md` F3/O1).
+Clients **auto-update**, and both failure modes it causes are now handled by
+`scripts/schtask_launch_client.ps1` — don't re-hardcode either:
+
+- The `app-*` directory changes (Canary went 1.0.1177 → 1.0.1181 mid-session). The
+  launcher resolves the newest `app-<version>` that still *contains* the exe at run
+  time; an update leaves the old directory behind but strips its exe.
+- After updating, Discord relaunches **itself** without `--remote-debugging-port`. It
+  is single-instance, so launching again just hands off to that live instance and
+  silently drops the flags. The launcher detects "process running but port not
+  listening" and stops those PIDs first.
+
+A client can also **wedge**: port listening, `/json` never answering, UI thread hung
+(seen on PTB). `focus_client`'s `AttachThreadInput` blocks forever against a hung GUI
+thread, which is why every stream now runs under `SOOKASTAGE_STREAM_TIMEOUT`
+(default 180s). Recovery is to kill that client by PID and relaunch.
