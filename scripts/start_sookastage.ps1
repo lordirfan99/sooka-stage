@@ -5,6 +5,7 @@
 #    (that build has a live Discord gateway bot; per an explicit 2026-09-18
 #    decision it stays off). If the old exe is somehow the one holding the
 #    port, it is stopped (by PID) and replaced.
+# 0b. Makes sure the channel renamer (voice_renamer.py) is running headless.
 # 1. Makes sure each of the three sooka.my watch windows (Brave / Chrome /
 #    Chrome Beta) is open -- these are the screenshare SOURCES.
 # 2. Chrome Beta's own window title never says "Beta" on this machine, so it
@@ -52,6 +53,23 @@ if (-not $mgrOk) {
     Write-Host "  Manager dashboard : starting (headless)..." -ForegroundColor Yellow
     Start-Process $pythonw -ArgumentList "`"$managerDir\run_headless.py`""
     Start-Sleep -Seconds 8
+}
+
+# ---- 0b: channel renamer ----------------------------------------------------
+# voice_renamer.py keeps the three stage channel names/topics matching the live
+# match. The old SookaRenamer task ran it under python.exe, which spawned a
+# console window on every logon (ISSUES.md F4) -- that task stays Disabled and
+# this launches the pythonw wrapper instead. It is a long-running loop, so this
+# starts it only when it is not already running (never a second copy).
+Write-Host "Checking channel renamer..."
+$renamerUp = Get-CimInstance Win32_Process -Filter "Name='pythonw.exe'" -ErrorAction SilentlyContinue |
+             Where-Object { $_.CommandLine -like "*run_renamer_headless*" } | Select-Object -First 1
+if ($renamerUp) {
+    Write-Host "  Channel renamer : already running (pid $($renamerUp.ProcessId))" -ForegroundColor Green
+} else {
+    Write-Host "  Channel renamer : starting (headless)..." -ForegroundColor Yellow
+    Start-Process $pythonw -ArgumentList "`"$managerDir\run_renamer_headless.py`"" -WorkingDirectory $managerDir
+    Start-Sleep -Seconds 3
 }
 
 # ---- 1 & 2: watch-browser windows -----------------------------------------
