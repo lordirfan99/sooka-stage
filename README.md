@@ -171,6 +171,73 @@ a chat message, or a screenshot.
 
 ---
 
+## 3.5 Running it from the PC (no VPS needed)
+
+Two shortcuts on the Desktop cover normal day-to-day use.
+
+### `Start SookaStage.bat`
+
+Double-click it. In order, it makes sure each of these is up, starting only
+what is missing:
+
+1. **Manager dashboard** — `sooka_server.py` on <http://localhost:8080/dashboard>.
+   Always the `.py` server, never the frozen `SookaStream-v8.16.exe` (that build
+   carries a live Discord gateway bot and stays off).
+2. **Channel renamer** — `voice_renamer.py`, windowless.
+3. **Three sooka.my watch windows** — Brave, Chrome, Chrome Beta. These are the
+   screenshare *sources*. The script only ensures a window exists; **it does not
+   choose which match plays** — set that yourself in each browser.
+4. **Three Discord clients** — each with its debug port.
+5. **All three streams** — `sookastage_prod.py --all`.
+
+It is idempotent: run it again and it reports everything already up and changes
+nothing. It finishes with `All three streams are live.` or names the step that
+failed.
+
+### `Sooka Startup Settings.bat`
+
+An ON/OFF control for what starts with Windows. It reads and writes the real
+mechanism (an `HKCU\...\Run` entry), never a remembered preference, so what it
+shows is what Windows will actually do. If Windows refuses a change, it says so
+rather than pretending it worked.
+
+| Setting | ON | OFF |
+|---|---|---|
+| **SookaStage starts with Windows** | After you log in, the launcher runs hidden and brings up everything in the list above. | Nothing starts until you run it yourself. **This is the default.** |
+| **Discord clients start themselves** | Windows starts Discord/Canary at logon **without** the debugging port SookaStage needs. Because Discord is single-instance, that copy must then be killed and relaunched before streaming can work. | Discord stays closed at logon and SookaStage launches the clients correctly itself. **Recommended.** |
+
+Turning Discord's autostart off does not delete anything — each entry is moved
+to a `SookaStage.Backup.*` value in the same registry key and moved back intact
+when you turn it on again.
+
+> If something opens by itself after a reboot, check this screen first. The
+> usual cause is Discord's own autostart, not SookaStage.
+
+### Where things are
+
+| What | Where |
+|---|---|
+| Run log (step by step) | `C:\Users\irfan\sookastage_prod.log` |
+| Watchdog log | `C:\Users\irfan\sookastage_watchdog.log` |
+| Renamer log | `C:\Users\irfan\voice_renamer_headless.log` |
+| Dashboard log | `C:\Users\irfan\sooka_server_headless.log` |
+| Last-run status (machine readable) | `C:\Users\irfan\sookastage_status.json` |
+| Single-run lock | `C:\Users\irfan\sookastage.lock` |
+| Discord user token | `C:\Users\irfan\SookaStage\.user_token.json` (never commit) |
+
+### Troubleshooting
+
+| Symptom | Cause / fix |
+|---|---|
+| Apps open by themselves after a reboot | Discord's own autostart. Turn "Discord clients start themselves" **OFF**. |
+| A stream shows the wrong match | The automation shares whatever is in that browser window; pick the match in the browser. |
+| One stream stuck, others fine | Check the failing step in `sookastage_prod.log`. The watchdog retries every 5 minutes. |
+| `tile ... refusing to guess` | Chrome and Chrome Beta look identical to the picker. The tag is re-applied automatically; a refusal means it could not be, and refusing beats sharing the wrong window. |
+| `another run holds ...sookastage.lock` | Normal — the watchdog and your manual run overlapped. The other run is doing the work. |
+| Nothing recovers at all | Confirm `SookaStageWatchdog` exists in Task Scheduler and is `Ready`. |
+
+---
+
 ## 4. Operating procedure
 
 ### 4.1 Preflight
