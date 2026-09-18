@@ -40,7 +40,11 @@ $mgrConn = Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction Silen
 $mgrOk = $false
 if ($mgrConn) {
     $cmdLine = (Get-CimInstance Win32_Process -Filter "ProcessId=$($mgrConn.OwningProcess)" -ErrorAction SilentlyContinue).CommandLine
-    if ($cmdLine -like "*sooka_server.py*") {
+    # run_headless.py is the pythonw wrapper that imports sooka_server, so the
+    # healthy server's command line says run_headless.py, not sooka_server.py.
+    # Matching only the latter meant every launch killed a perfectly good
+    # dashboard and restarted it.
+    if ($cmdLine -like "*sooka_server.py*" -or $cmdLine -like "*run_headless.py*") {
         Write-Host "  Manager dashboard : already up (safe .py server)" -ForegroundColor Green
         $mgrOk = $true
     } else {
