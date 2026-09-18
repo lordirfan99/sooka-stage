@@ -1,5 +1,10 @@
 # Double-click entry point for SookaStage.
 #
+# 0. Makes sure the Manager dashboard (sooka_server.py, port 8080) is running
+#    -- the safe .py source tree, never the frozen SookaStream-v8.16.exe
+#    (that build has a live Discord gateway bot; per an explicit 2026-09-18
+#    decision it stays off). If the old exe is somehow the one holding the
+#    port, it is stopped (by PID) and replaced.
 # 1. Makes sure each of the three sooka.my watch windows (Brave / Chrome /
 #    Chrome Beta) is open -- these are the screenshare SOURCES.
 # 2. Chrome Beta's own window title never says "Beta" on this machine, so it
@@ -14,6 +19,8 @@
 $ErrorActionPreference = "Continue"
 $repo = "C:\Users\irfan\Desktop\sooka-stage"
 $python = "C:\Users\irfan\AppData\Local\Programs\Python\Python312\python.exe"
+$pythonw = "C:\Users\irfan\AppData\Local\Programs\Python\Python312\pythonw.exe"
+$managerDir = "C:\Users\irfan\Desktop\Restored-Desktop\SookaStream-Windows-x64-v8.6\SookaStream-Windows-x64-v8.6"
 
 Add-Type @"
 using System;
@@ -25,6 +32,27 @@ public class SookaWin32 {
 
 Write-Host "=== SookaStage ===" -ForegroundColor Cyan
 Write-Host ""
+
+# ---- 0: Manager dashboard ---------------------------------------------------
+Write-Host "Checking Manager dashboard (port 8080)..."
+$mgrConn = Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+$mgrOk = $false
+if ($mgrConn) {
+    $cmdLine = (Get-CimInstance Win32_Process -Filter "ProcessId=$($mgrConn.OwningProcess)" -ErrorAction SilentlyContinue).CommandLine
+    if ($cmdLine -like "*sooka_server.py*") {
+        Write-Host "  Manager dashboard : already up (safe .py server)" -ForegroundColor Green
+        $mgrOk = $true
+    } else {
+        Write-Host "  Manager dashboard : port 8080 held by something else ($cmdLine) -- stopping it" -ForegroundColor Yellow
+        Stop-Process -Id $mgrConn.OwningProcess -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
+    }
+}
+if (-not $mgrOk) {
+    Write-Host "  Manager dashboard : starting (headless)..." -ForegroundColor Yellow
+    Start-Process $pythonw -ArgumentList "`"$managerDir\run_headless.py`""
+    Start-Sleep -Seconds 8
+}
 
 # ---- 1 & 2: watch-browser windows -----------------------------------------
 Write-Host "Checking watch-browser windows..."
@@ -95,6 +123,7 @@ Write-Host ""
 $rc = $LASTEXITCODE
 
 Write-Host ""
+Write-Host "Manager dashboard: http://localhost:8080/dashboard" -ForegroundColor DarkCyan
 if ($rc -eq 0) {
     Write-Host "=== All three streams are live. ===" -ForegroundColor Green
 } else {
