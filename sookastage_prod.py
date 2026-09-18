@@ -28,6 +28,7 @@ import argparse
 import json
 import os
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -483,6 +484,18 @@ class StageFlow:
         st = self.state()
         if st.get("share_button") or st.get("streaming") or st.get("voice_connected"):
             return self.record("join", True, already=True)
+        # The channel row is often scrolled out of the sidebar's visible area
+        # (measured live: y=680 in a 519px-tall Canary window while the same
+        # row sat at y=409 on stable). find() requires the element to
+        # intersect the viewport, so an off-screen row fails as `not-found`
+        # no matter how correct the predicate is -- same trap as the picker
+        # tiles. Scroll it in first, then let layout settle.
+        self.cdp.evaluate(
+            "(() => { const el = document.querySelector("
+            f"'[data-list-item-id=\"channels___{self.cfg['channel']}\"]'); "
+            "if (el) el.scrollIntoView({block: 'center'}); return !!el; })()"
+        )
+        time.sleep(0.3)
         # Joining is not activation-gated, so a synthetic click is fine here
         # (this is the `li -> a.click()` path already proven to work).
         res = self.cdp.js_click(by_href(self.cfg["channel"]))
@@ -558,8 +571,29 @@ class StageFlow:
                            hover=res.get("hover"), covered=res.get("covered"),
                            cover=res.get("cover_label"))
 
+    @staticmethod
+    def retag_chrome_beta():
+        """Re-apply the Chrome Beta window-title tag.
+
+        Chrome Beta's OS window title never says "Beta", so without a tag it
+        and plain Chrome produce byte-identical picker labels and choose_tile
+        correctly refuses to guess. The tag is a window title, so any page
+        reload in that window silently reverts it -- tagging once during
+        preflight is not enough, it has to be re-applied immediately before
+        the tiles are read. Best-effort: if it fails, choose_tile still
+        refuses rather than sharing the wrong window.
+        """
+        try:
+            sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts"))
+            from watch_windows import tag_chrome_beta_window
+            return tag_chrome_beta_window()
+        except Exception as exc:  # never let tagging take a stream down
+            log(f"    chrome beta retag skipped: {exc}")
+            return (False, False)
+
     def select_tile(self):
         """Root cause #5: tiles differ only by browser suffix."""
+        self.retag_chrome_beta()
         if self.state().get("streaming"):
             return self.record("tile", True, already=True)
         probe = self.cdp.wait_for(
@@ -630,13 +664,24 @@ class StageFlow:
 # --------------------------------------------------------------------------
 def focus_client(port: int) -> dict:
     """Best-effort foreground. CDP input does not need focus, so a failure here
-    is logged and ignored -- it only matters for the real-mouse fallback."""
+    is logged and ignored -- it only matters for the real-mouse fallback.
+
+    The netstat call MUST be bounded. It used to have no timeout, and when it
+    hung (observed live on the PTB client) it took the whole runner with it:
+    focus_client runs before CDP.connect, so the run stalled after printing
+    only the stream header, held the single-run lock for 15+ minutes, and
+    blocked every watchdog pass behind it. An unbounded call in the
+    self-healing path is how self-healing stops happening.
+    """
     info = {"attempted": False}
     if os.name != "nt":
         return dict(info, skipped="not windows")
     import subprocess
     try:
-        out = subprocess.check_output("netstat -ano", shell=True).decode("utf-8", "replace")
+        out = subprocess.check_output(
+            "netstat -ano", shell=True, timeout=20).decode("utf-8", "replace")
+    except subprocess.TimeoutExpired:
+        return dict(info, error="netstat timed out after 20s (skipping focus)")
     except subprocess.SubprocessError as exc:
         return dict(info, error=repr(exc))
     pid = parse_netstat_pid(out, port)
@@ -671,7 +716,8 @@ def run_one(stream_id: int, args) -> dict:
         return out
 
     try:
-        flow = StageFlow(cdp, cfg, topic=args.topic, verbose=args.verbose)
+        topic = args.topic if args.topic is not None else str(stream_id)
+        flow = StageFlow(cdp, cfg, topic=topic, verbose=args.verbose)
         st = flow.state()
         log(f"  page: {st.get('url')}")
         log("  state: " + json.dumps({k: v for k, v in st.items()
@@ -703,7 +749,12 @@ def main(argv=None):
     ap.add_argument("--stream", type=int, choices=sorted(STREAMS), action="append",
                     help="stream number; repeatable")
     ap.add_argument("--all", action="store_true", help="run every configured stream")
-    ap.add_argument("--topic", default="1", help="stage topic to type (default: 1)")
+    # Default None, not "1": with a fixed default every stream opened its stage
+    # with topic "1", so all three channels showed the same topic. Unset means
+    # "use the stream's own number" (stream 2 -> "2"); an explicit --topic
+    # still overrides for all selected streams.
+    ap.add_argument("--topic", default=None,
+                    help="stage topic (default: the stream's own number)")
     ap.add_argument("--diagnose", action="store_true", help="report state, click nothing")
     ap.add_argument("--dump-buttons", action="store_true", help="print every button label")
     ap.add_argument("--json", dest="as_json", action="store_true", help="machine-readable summary")
@@ -739,6 +790,39 @@ def main(argv=None):
             f"stream{r['stream']}={'OK' if r.get('ok') else 'FAIL'}" for r in results))
         return 0 if all(r.get("ok") for r in results) else 1
 
+    per_stream_timeout = float(os.environ.get("SOOKASTAGE_STREAM_TIMEOUT", "180"))
+
+    def run_one_bounded(n):
+        """Run one stream, but never let it stall the whole pass.
+
+        A wedged client can block in places no per-call timeout covers: PTB was
+        observed listening on its port while /json never answered AND its UI
+        thread was hung, and focus_client's AttachThreadInput blocks forever
+        attaching to a hung GUI thread. That stalled the runner for 15+ minutes
+        holding the single-run lock, so every watchdog pass behind it was
+        skipped -- a hang in the self-healing path silently disables
+        self-healing, which is worse than any single stream being down.
+
+        The worker is a daemon thread: if it is still stuck in a blocking Win32
+        call when we give up, it cannot keep the interpreter alive either.
+        """
+        result = {}
+
+        def work():
+            try:
+                result["out"] = run_one(n, args)
+            except Exception as exc:  # noqa: BLE001 - must not kill the other streams
+                result["out"] = {"stream": n, "ok": False, "error": repr(exc)}
+
+        t = threading.Thread(target=work, daemon=True)
+        t.start()
+        t.join(per_stream_timeout)
+        if t.is_alive():
+            log(f"  stream{n}: gave up after {per_stream_timeout:.0f}s (client wedged?)")
+            return {"stream": n, "ok": False,
+                    "error": f"timed out after {per_stream_timeout:.0f}s -- client likely wedged"}
+        return result.get("out", {"stream": n, "ok": False, "error": "no result"})
+
     lock = RunLock()
     if not lock.acquire():
         log(f"another run holds {LOCK_PATH} -- exiting without touching anything")
@@ -746,7 +830,7 @@ def main(argv=None):
             print(json.dumps({"skipped": "another run in progress"}, indent=2))
         return 0  # not a failure: the run that holds the lock is doing this work
     try:
-        results = [run_one(n, args) for n in streams]
+        results = [run_one_bounded(n) for n in streams]
         ok = all(r.get("ok") for r in results)
         write_status(results)
         if args.as_json:
