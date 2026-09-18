@@ -23,6 +23,9 @@ LOG = r"C:\Users\irfan\sookastage_watchdog.log"
 with open(LOG, "a", encoding="utf-8", errors="replace") as fh:
     sys.stdout = fh
     sys.stderr = fh
+    from watch_windows import tag_chrome_beta_window
+    found, tagged = tag_chrome_beta_window()
+    print(f"chrome beta window: found={found} tagged={tagged}")
     import sookastage_prod
     rc = sookastage_prod.main(["--all"])
 
