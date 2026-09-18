@@ -544,7 +544,14 @@ class StageFlow:
             return self.record("speaker", bool(ok), click=res.get("reason"))
         if st.get("share_button") or st.get("streaming"):
             return self.record("speaker", True, already=True)
-        return self.record("speaker", True, already=True, note="no Speak on Stage button")
+        # No "Speak on Stage" button, no Share button, not streaming: we are in
+        # the audience with no way to claim the slot right now. Reporting this
+        # as success used to push the run onward to click a Share button that
+        # does not exist, so the failure surfaced two steps later as a
+        # mystifying "share_picker clicked but nothing opened". Fail here
+        # instead -- the next watchdog pass retries, and by then the freshly
+        # relaunched client has usually finished rendering the stage panel.
+        return self.record("speaker", False, note="still in audience: no Speak on Stage button")
 
     def dismiss_audio_prompt_if_present(self):
         """Windows' "New Audio Device Detected" toast (seen live: triggered by

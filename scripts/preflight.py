@@ -19,8 +19,13 @@ import time
 REPO = r"C:\Users\irfan\Desktop\sooka-stage"
 
 WATCH_BROWSERS = [
+    # Every entry needs a path_hint. Brave used to have None, which means "any
+    # window whose title starts with the sooka page title" -- so with Chrome's
+    # sooka window open it reported "Brave : already open" while no Brave
+    # window existed at all, and the run then failed further along with
+    # "no tile for 'brave'". A hint per browser is what makes the check real.
     {"name": "Brave", "exe": r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
-     "proc": "brave", "path_hint": None},
+     "proc": "brave", "path_hint": "brave.exe"},
     {"name": "Chrome", "exe": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
      "proc": "chrome", "path_hint": "\\Chrome\\Application\\"},
     {"name": "Chrome Beta", "exe": r"C:\Program Files\Google\Chrome Beta\Application\chrome.exe",
