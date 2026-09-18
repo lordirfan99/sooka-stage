@@ -86,6 +86,42 @@ LOG_PATH = os.environ.get("SOOKASTAGE_LOG") or (
     else os.path.join(os.path.dirname(os.path.abspath(__file__)), "sookastage_prod.log")
 )
 
+# Written after every run so other tools (the watchdog, a dashboard) can read
+# "what happened last time" without opening their own CDP session -- repeated
+# CDP/WebSocket sessions are exactly what wedges the main build's /json
+# endpoint (ISSUES.md root cause A). Never treat this file as more current
+# than its own "checked_at" timestamp.
+STATUS_PATH = os.environ.get("SOOKASTAGE_STATUS") or (
+    r"C:\Users\irfan\sookastage_status.json" if os.name == "nt"
+    else os.path.join(os.path.dirname(os.path.abspath(__file__)), "sookastage_status.json")
+)
+
+
+def write_status(results):
+    """Merge `results` into STATUS_PATH by stream number, not overwrite it --
+    a single `--stream 2` run must not blank out what's known about 1 and 3."""
+    import datetime
+    by_stream = {}
+    try:
+        with open(STATUS_PATH, encoding="utf-8") as fh:
+            for r in (json.load(fh).get("streams") or []):
+                by_stream[r.get("stream")] = r
+    except (OSError, ValueError):
+        pass
+    for r in results:
+        by_stream[r.get("stream")] = r
+    merged = [by_stream[k] for k in sorted(by_stream)]
+    payload = {
+        "checked_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "ok": all(r.get("ok") for r in merged),
+        "streams": merged,
+    }
+    try:
+        with open(STATUS_PATH, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, default=str)
+    except OSError:
+        pass  # a missing/locked status path must never take the stream down
+
 
 QUIET_STDOUT = False  # set True in main() for --json: keep stdout as pure JSON
 
@@ -585,6 +621,8 @@ def main(argv=None):
 
     results = [run_one(n, args) for n in streams]
     ok = all(r.get("ok") for r in results)
+    if not args.diagnose:
+        write_status(results)
     if args.as_json:
         print(json.dumps(results, indent=2, default=str))
     log("SUMMARY: " + ", ".join(
