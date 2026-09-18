@@ -97,6 +97,90 @@ STATUS_PATH = os.environ.get("SOOKASTAGE_STATUS") or (
 )
 
 
+LOCK_PATH = os.environ.get("SOOKASTAGE_LOCK") or (
+    r"C:\Users\irfan\sookastage.lock" if os.name == "nt"
+    else os.path.join(os.path.dirname(os.path.abspath(__file__)), "sookastage.lock")
+)
+
+
+def _pid_alive(pid):
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+    import subprocess
+    try:
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                             capture_output=True, text=True, timeout=10).stdout
+    except (subprocess.SubprocessError, OSError):
+        return True  # can't tell -- assume alive, i.e. don't steal the lock
+    return str(pid) in out
+
+
+class RunLock:
+    """Single-run guard shared by every entry point.
+
+    The 5-minute watchdog task and a hand-run `--all` can otherwise overlap and
+    drive the same three clients at once: two CDP sessions per client, clicks
+    landing mid-picker from the other run, and the DevTools /json wedge that
+    ISSUES.md root cause A describes. Whoever holds the lock wins; the other
+    exits cleanly rather than queueing, because by the time it would get a turn
+    the first run has already brought the streams up.
+
+    A crashed run leaves the file behind, so a lock whose PID is gone is stale
+    and gets taken over.
+    """
+
+    def __init__(self, path=LOCK_PATH):
+        self.path = path
+        self.acquired = False
+
+    def acquire(self):
+        for _ in range(2):
+            try:
+                fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                try:
+                    with open(self.path) as fh:
+                        holder = int((fh.read() or "0").strip() or 0)
+                except (OSError, ValueError):
+                    holder = 0
+                # Refused whenever the holder is alive -- including when the
+                # holder is us. A same-PID exemption looks like re-entrancy
+                # support but really just hands the lock to a second caller
+                # inside one process, which is the exact overlap being guarded.
+                if holder and _pid_alive(holder):
+                    return False
+                # stale (holder gone, or unreadable) -- clear it and retry once
+                try:
+                    os.unlink(self.path)
+                except OSError:
+                    return False
+                continue
+            with os.fdopen(fd, "w") as fh:
+                fh.write(str(os.getpid()))
+            self.acquired = True
+            return True
+        return False
+
+    def release(self):
+        if not self.acquired:
+            return
+        try:
+            os.unlink(self.path)
+        except OSError:
+            pass
+        self.acquired = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.release()
+
+
 def write_status(results):
     """Merge `results` into STATUS_PATH by stream number, not overwrite it --
     a single `--stream 2` run must not blank out what's known about 1 and 3."""
@@ -619,15 +703,32 @@ def main(argv=None):
         ap.print_help()
         return 2
 
-    results = [run_one(n, args) for n in streams]
-    ok = all(r.get("ok") for r in results)
-    if not args.diagnose:
+    # --diagnose only reads state, so it never needs to exclude anything.
+    if args.diagnose:
+        results = [run_one(n, args) for n in streams]
+        if args.as_json:
+            print(json.dumps(results, indent=2, default=str))
+        log("SUMMARY: " + ", ".join(
+            f"stream{r['stream']}={'OK' if r.get('ok') else 'FAIL'}" for r in results))
+        return 0 if all(r.get("ok") for r in results) else 1
+
+    lock = RunLock()
+    if not lock.acquire():
+        log(f"another run holds {LOCK_PATH} -- exiting without touching anything")
+        if args.as_json:
+            print(json.dumps({"skipped": "another run in progress"}, indent=2))
+        return 0  # not a failure: the run that holds the lock is doing this work
+    try:
+        results = [run_one(n, args) for n in streams]
+        ok = all(r.get("ok") for r in results)
         write_status(results)
-    if args.as_json:
-        print(json.dumps(results, indent=2, default=str))
-    log("SUMMARY: " + ", ".join(
-        f"stream{r['stream']}={'OK' if r.get('ok') else 'FAIL'}" for r in results))
-    return 0 if ok else 1
+        if args.as_json:
+            print(json.dumps(results, indent=2, default=str))
+        log("SUMMARY: " + ", ".join(
+            f"stream{r['stream']}={'OK' if r.get('ok') else 'FAIL'}" for r in results))
+        return 0 if ok else 1
+    finally:
+        lock.release()
 
 
 if __name__ == "__main__":
