@@ -17,6 +17,11 @@
 # 4. Runs sookastage_prod.py --all, which is idempotent -- already-live
 #    streams are untouched, only what's actually down gets (re)driven.
 
+# -NonInteractive is what the "start with Windows" entry uses: at logon there
+# is nobody to press a key, and the pause at the end would otherwise leave an
+# invisible process waiting forever.
+param([switch]$NonInteractive)
+
 $ErrorActionPreference = "Continue"
 $repo = "C:\Users\irfan\Desktop\sooka-stage"
 $python = "C:\Users\irfan\AppData\Local\Programs\Python\Python312\python.exe"
@@ -153,6 +158,8 @@ if ($rc -eq 0) {
     Write-Host "Tip: pick the right match on each sooka.my tab yourself if it's showing the wrong thing --" -ForegroundColor DarkYellow
     Write-Host "this script only makes sure a sooka.my window exists, it does not choose the match." -ForegroundColor DarkYellow
 }
-Write-Host ""
-Write-Host "Press any key to close this window..."
-$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+if (-not $NonInteractive) {
+    Write-Host ""
+    Write-Host "Press any key to close this window..."
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+}
