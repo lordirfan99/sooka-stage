@@ -238,9 +238,20 @@ def by_label(pattern: str, in_dialog: bool = False, max_len: int | None = None) 
 
 
 def by_href(channel_id: str) -> str:
+    """JS predicate for the sidebar entry of one channel, matched by ID.
+
+    Discord renders the channel row as `<a role=... data-list-item-id=
+    "channels___<id>">` with **no href at all**, so matching on href alone
+    silently never matches and the join step fails with `not-found`. Both
+    forms are accepted: href for builds that still carry one,
+    data-list-item-id for the ones that don't. Still strictly ID-based --
+    never match a channel by name, the renamer rewrites those live.
+    """
     return (
-        "el.tagName === 'A' && (el.getAttribute('href')||'').replace(/\\/$/,'')"
-        f".endsWith('/{channel_id}')"
+        "(el.tagName === 'A' || el.getAttribute('data-list-item-id')) && ("
+        f"(el.getAttribute('href')||'').replace(/\\/$/,'').endsWith('/{channel_id}')"
+        f" || (el.getAttribute('data-list-item-id')||'').endsWith('_{channel_id}')"
+        ")"
     )
 
 
@@ -265,6 +276,7 @@ STATE_JS = r"""
     can_start_stage: any(/start stage|start the stage/i),
     continue_without: any(/continue without starting/i),
     audio_device_prompt: any(/^\s*don'?t switch\s*$/i),
+    voice_connected: any(/voice connected/i) || any(/disconnect quietly/i),
     join_stage: any(/join stage/i),
     speak_on_stage: any(/^\s*speak on stage/i),
     share_button: any(/share your screen/i),
@@ -457,22 +469,27 @@ class StageFlow:
         return self.record("start_stage", True, rest=reason)
 
     def ensure_in_stage(self):
-        """The 'start stage'/'continue without' banner shows even when we have
-        never joined the stage's voice channel -- it is not evidence of being
-        in the stage. 'Join Stage' (tracked as `join_stage` in STATE_JS) is:
-        present means we still need to click it, absent means we are in."""
+        """Connect to the stage's voice channel.
+
+        The 'start stage'/'continue without' banner shows even when we have
+        never joined -- it is not evidence of being in. Absence of a 'Join
+        Stage' button is not evidence either: when the stage has not been
+        started yet there is no such button to begin with, so treating
+        "no button" as "already joined" silently skips the join and leaves
+        every later step working against a channel we are not connected to.
+        `voice_connected` (the Voice Connected / Disconnect Quietly panel) is
+        the ground truth, so check that first.
+        """
         st = self.state()
-        if st.get("share_button") or st.get("streaming"):
+        if st.get("share_button") or st.get("streaming") or st.get("voice_connected"):
             return self.record("join", True, already=True)
-        if not st.get("join_stage"):
-            return self.record("join", True, already=True, note="no Join Stage button")
         # Joining is not activation-gated, so a synthetic click is fine here
         # (this is the `li -> a.click()` path already proven to work).
         res = self.cdp.js_click(by_href(self.cfg["channel"]))
         if not res["ok"]:
             res = self.cdp.click(by_label(SELECTORS["join_stage"]), trusted_only=False)
         ok = self.cdp.wait_for(
-            lambda: (lambda s: (not s.get("join_stage")) or s.get("share_button")
+            lambda: (lambda s: s.get("voice_connected") or s.get("share_button")
                      or s.get("streaming") or None)(self.state()),
             timeout=25, desc="join stage",
         )
@@ -590,8 +607,18 @@ class StageFlow:
                            covered=res.get("covered"))
 
     def run(self):
-        for step in (self.ensure_channel, self.ensure_stage_started, self.ensure_in_stage,
-                     self.ensure_undeafened, self.ensure_speaker,
+        # Order matters, and getting it wrong fails in a way that looks like a
+        # click bug. Starting the stage BEFORE joining the voice channel
+        # creates an instance with zero speakers, and Discord auto-ends an
+        # empty stage within seconds: POST returns 200, the instance is 404 a
+        # moment later, the client is back to showing "Start Stage", and
+        # "Share Your Screen" never exists -- while the account sits in
+        # Audience. Joining first also means the REST call is made as a
+        # connected moderator, which is what puts us on stage as a speaker
+        # rather than in the audience.
+        for step in (self.ensure_channel, self.ensure_in_stage,
+                     self.ensure_undeafened, self.ensure_stage_started,
+                     self.ensure_speaker,
                      self.open_picker, self.select_tile, self.go_live):
             if not step().ok:
                 return False
