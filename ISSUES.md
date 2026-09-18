@@ -152,6 +152,92 @@ self-healing. Not one-shot -- intentionally left registered.
 
 ---
 
+### F10 — Every stream stuck in Audience with no Share button (flow ordering)
+**Symptom.** `start_stage` logged `http 200`, but `GET /stage-instances/<ch>` returned
+`404` for all three channels moments later; the client kept showing "Start Stage", the
+account sat in **Audience**, and `share_picker` failed ~20s later — sometimes with a
+missed click, sometimes with a landed click (`hover='hit'`) that opened nothing.
+**Root cause.** The stage was created *before* joining the voice channel, so it had zero
+speakers and Discord auto-ended it within seconds. The 200 was real; the instance just
+did not survive.
+**Resolution.** Order is now `channel → join → undeafen → start_stage → speaker → …`.
+Joining first also means the REST call is made as a connected moderator, which is what
+puts the account on stage as a speaker rather than in the audience.
+**Evidence.** All eight steps clean in ~6s; `GET /stage-instances` returns LIVE
+afterwards for all three channels with topics `1`/`2`/`3`.
+
+### F11 — `join` could never work: the channel anchor has no href
+**Symptom.** `[FAIL] join via='not-found'` on every client, after a 25s timeout.
+**Root cause.** `by_href()` required an `<a>` whose `href` ends in the channel ID, but
+Discord renders the row as `<a role=… data-list-item-id="channels___<id>">` with
+`href=null`, so the predicate never matched anything.
+**Resolution.** Accept either form, still strictly by ID (never by name — the renamer
+rewrites those live). Two regression tests cover it.
+**Also.** `ensure_in_stage()` used to infer "already joined" from the *absence* of a
+Join Stage button — but when the stage is not started there is no such button at all,
+so that inference silently skipped the join and every later step then worked against a
+channel we were not connected to. It now checks a real `voice_connected` signal.
+
+### F12 — Channel row below the fold fails as `not-found`
+**Symptom.** Join worked on stable but failed on Canary with the same predicate.
+**Root cause.** `find()` requires the element to intersect the viewport. Measured live:
+the row sat at y=680 in a 519px-tall Canary window (y=409 on stable). Same trap as the
+picker tiles.
+**Resolution.** `scrollIntoView({block:'center'})` before the click.
+
+### F13 — Discord auto-updates broke the launcher two ways
+**Symptom.** Canary updated 1.0.1177 → 1.0.1181; launcher reported `EXE NOT FOUND` and
+stream 2 stayed down with the watchdog unable to heal it.
+**Root cause.** (a) the exe path was hard-coded per build, and an update leaves the old
+`app-*` directory behind but strips its exe; (b) after updating, Discord relaunches
+*itself* without `--remote-debugging-port`, and since it is single-instance, launching
+again just hands off to that live instance and silently drops the flags.
+**Resolution.** Resolve the newest `app-<version>` that actually contains the exe
+(compared as `[version]`, so `app-1.0.999` cannot outrank `app-1.0.1000`), and stop a
+running-but-portless instance by PID before launching.
+
+### F14 — A wedged client stalled the whole system indefinitely
+**Symptom.** A run sat on stream 3 for 15+ minutes holding the single-run lock, so every
+watchdog pass behind it was skipped.
+**Root cause.** PTB was listening on 9224 while `/json` never answered and its UI thread
+was hung; `focus_client`'s `AttachThreadInput` blocks forever attaching to a hung GUI
+thread. `netstat` was also unbounded.
+**Resolution.** Each stream runs in a daemon thread bounded by
+`SOOKASTAGE_STREAM_TIMEOUT` (default 180s) and `netstat` got a timeout. A hang in the
+self-healing path silently disables self-healing, which is worse than one stream down.
+
+### F15 — Watchdog healed share state but never a dead client
+**Symptom.** Streams 1 and 3 stayed down 20+ minutes while the watchdog reported healthy.
+**Root cause.** It only re-ran `sookastage_prod.py --all`, which re-drives the *share
+flow*; if a client's *process* is gone (port not listening at all) there is nothing to
+drive. Same class of gap: preflight's Brave check used `path_hint=None`, so it matched
+*any* browser's sooka window and reported "Brave : already open" when no Brave window
+existed.
+**Resolution.** `scripts/preflight.py` ensures the watch windows and the Discord clients
+themselves are up before handing off to the runner; every browser matches on its own
+executable path.
+**Evidence.** Killed Discord stable (6 procs) plus the Brave watch window; one watchdog
+pass relaunched the client, reopened the window, and returned all three to
+`streaming:true`.
+
+### F16 — Concurrent runs drove the same clients at once
+**Symptom.** Flaky `no-coordinate-hit` / "clicked but nothing opened" failures.
+**Root cause.** The 5-minute watchdog task fired while a hand-run `--all` was mid-flight:
+two CDP sessions per client and clicks landing in the other run's half-open picker.
+**Resolution.** A PID lock (`sookastage.lock`) in `main()`; the loser exits 0. Stale
+locks (holder PID gone) are taken over, or a crashed run would disable healing forever.
+
+### F17 — Renamer was never actually running
+**Symptom.** Channel names/topics never changed.
+**Root cause.** The `SookaRenamer` task was disabled (correctly — it ran `python.exe`
+and spawned a console window every logon, F4) and nothing replaced it.
+**Resolution.** `run_renamer_headless.py` (pythonw + line-buffered log), started by the
+one-click launcher when not already running.
+**Note.** A `—` rendering as `?` in terminal output here is a console display artifact,
+not data corruption: the stored Discord topic was verified byte-for-byte as U+2014.
+
+---
+
 ## OPEN
 
 ### O1 — Canary `1.0.1177` exits silently 2–7 minutes after launch
@@ -167,7 +253,11 @@ running and streaming live past 01:40 (70+ minutes) -- well beyond the documente
 minute window. Not closing this issue: it is intermittent and 70 minutes of one session
 is not proof it cannot recur, but it did not reproduce during this session's extended
 live run.
-**Assessment.** A defect in this Canary build on this machine, not an install problem.
+**2026-09-18 (later) update.** Canary auto-updated to **`app-1.0.1181`**, so this issue's
+title version is no longer the build in use; the silent-exit behaviour did not recur on
+1.0.1181 during this session. The update itself caused two *different* failures, now
+fixed — see F13. Stream 2 has since run clean through repeated full passes.
+**Assessment.** A defect in that Canary build on this machine, not an install problem.
 **Options.** (a) wait for the next Canary build; (b) host Stream 2 on a different client
 build; (c) wrap Canary in a restart watchdog that relaunches it and re-runs the stream
 start -- partially covered now by `SookaStageWatchdog` (F9), which re-runs the *stream*
