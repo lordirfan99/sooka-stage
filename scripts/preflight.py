@@ -116,18 +116,36 @@ def ensure_discord_clients():
         if _port_listening(port):
             _log(f"  stream {stream} (port {port}) : already up")
             continue
-        _log(f"  stream {stream} (port {port}) : not listening, launching...")
-        # -WindowStyle Hidden covers the PowerShell host's own window;
-        # CREATE_NO_WINDOW stops the console being allocated in the first
-        # place (the watchdog runs under pythonw, so the child would otherwise
-        # create its own console and flash it on the desktop).
-        subprocess.run(
-            ["powershell", "-NoProfile", "-WindowStyle", "Hidden",
-             "-ExecutionPolicy", "Bypass", "-File",
-             f"{REPO}\\scripts\\schtask_launch_client.ps1", "-Stream", str(stream)],
-            capture_output=True, text=True, timeout=30, **_no_window(),
-        )
-        time.sleep(8)
+        # Launch, then VERIFY the port arrived. Discord can finish an update
+        # right after we start it correctly and relaunch ITSELF without the
+        # debug port -- observed live when PTB went 1.0.1220 -> 1.0.1221
+        # mid-run, leaving the client running and the port dead. We cannot
+        # stop Discord updating itself, but we can notice the port never came
+        # up and try once more, which is usually enough once the update has
+        # settled. Still failing after that is left to the next watchdog pass
+        # rather than looped on here.
+        for attempt in (1, 2):
+            _log(f"  stream {stream} (port {port}) : not listening, launching"
+                 f"{' (retry)' if attempt == 2 else ''}...")
+            # -WindowStyle Hidden covers the PowerShell host's own window;
+            # CREATE_NO_WINDOW stops the console being allocated in the first
+            # place (the watchdog runs under pythonw, so the child would
+            # otherwise create its own console and flash it on the desktop).
+            subprocess.run(
+                ["powershell", "-NoProfile", "-WindowStyle", "Hidden",
+                 "-ExecutionPolicy", "Bypass", "-File",
+                 f"{REPO}\\scripts\\schtask_launch_client.ps1", "-Stream", str(stream)],
+                capture_output=True, text=True, timeout=60, **_no_window(),
+            )
+            for _ in range(15):          # ~15s for the port to appear
+                if _port_listening(port):
+                    break
+                time.sleep(1)
+            if _port_listening(port):
+                _log(f"  stream {stream} (port {port}) : up")
+                break
+            _log(f"  stream {stream} (port {port}) : still not listening"
+                 f"{' -- leaving it for the next pass' if attempt == 2 else ''}")
 
 
 def run(argv):

@@ -299,18 +299,29 @@ def layer_selfheal():
     check("selfheal", "killed the PTB client", killed not in ("", "0"), f"procs={killed}")
     time.sleep(3)
     check("selfheal", "port 9224 is actually down", not port_open(9224))
-    r = run([PYTHON, os.path.join(REPO, "scripts", "preflight.py"), "--all", "--json"],
+    # The documented contract is "recovers within one watchdog interval", not
+    # "within one pass": a client that was just relaunched is still settling,
+    # and Discord may even be mid-update. So allow a second pass, and report
+    # how many it took rather than pretending one is required.
+    recovered_on = 0
+    for attempt in (1, 2):
+        run([PYTHON, os.path.join(REPO, "scripts", "preflight.py"), "--all", "--json"],
             cwd=REPO, timeout=500)
-    check("selfheal", "preflight relaunched it", port_open(9224))
-    ok = False
-    try:
-        with open(STATUS_PATH, encoding="utf-8") as fh:
-            for s in json.load(fh).get("streams", []):
-                if s.get("stream") == 3:
-                    ok = bool((s.get("state_after") or {}).get("streaming"))
-    except (OSError, ValueError):
-        pass
-    check("selfheal", "stream 3 returned to streaming", ok)
+        streaming = False
+        try:
+            with open(STATUS_PATH, encoding="utf-8") as fh:
+                for s in json.load(fh).get("streams", []):
+                    if s.get("stream") == 3:
+                        streaming = bool((s.get("state_after") or {}).get("streaming"))
+        except (OSError, ValueError):
+            pass
+        if streaming:
+            recovered_on = attempt
+            break
+    check("selfheal", "preflight relaunched the client", port_open(9224))
+    check("selfheal", "stream 3 returned to streaming within 2 passes",
+          recovered_on > 0, f"recovered on pass {recovered_on}" if recovered_on
+          else "still down after 2 passes")
 
 
 def main():
