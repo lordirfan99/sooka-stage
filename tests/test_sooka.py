@@ -167,6 +167,21 @@ class TestPredicates(unittest.TestCase):
         js = by_href("1477692113738137600")
         self.assertIn(".endsWith('/1477692113738137600')", js)
 
+    def test_by_href_also_matches_data_list_item_id(self):
+        """Discord renders the channel row as an <a> with NO href, only
+        data-list-item-id="channels___<id>" -- matching href alone made the
+        join step fail with `not-found` on every run."""
+        js = by_href("1477692113738137600")
+        self.assertIn("data-list-item-id", js)
+        self.assertIn(".endsWith('_1477692113738137600')", js)
+
+    def test_by_href_is_still_id_only_never_name(self):
+        """The renamer rewrites channel names live, so a name must never
+        appear in the predicate."""
+        js = by_href("1477692113738137600")
+        self.assertNotIn("textContent", js)
+        self.assertNotIn("aria-label", js)
+
 
 class FakeDevTools(threading.Thread):
     """Minimal DevTools server: answers Runtime.evaluate, and deliberately
