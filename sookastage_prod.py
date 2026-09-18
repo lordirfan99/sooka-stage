@@ -40,6 +40,7 @@ from sooka_cdp import (
     MOD_SHIFT,
     find_window_by_pid,
     force_foreground,
+    no_window_kwargs,
     parse_netstat_pid,
 )
 
@@ -114,7 +115,8 @@ def _pid_alive(pid):
     import subprocess
     try:
         out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-                             capture_output=True, text=True, timeout=10).stdout
+                             capture_output=True, text=True, timeout=10,
+                             **no_window_kwargs()).stdout
     except (subprocess.SubprocessError, OSError):
         return True  # can't tell -- assume alive, i.e. don't steal the lock
     return str(pid) in out
@@ -685,8 +687,12 @@ def focus_client(port: int) -> dict:
         return dict(info, skipped="not windows")
     import subprocess
     try:
+        # List form, not shell=True: shell=True runs this through cmd.exe,
+        # which flashes a console window on the desktop every watchdog pass
+        # (and is a command-injection shape we don't need). CREATE_NO_WINDOW
+        # keeps netstat's own console hidden -- see no_window_kwargs().
         out = subprocess.check_output(
-            "netstat -ano", shell=True, timeout=20).decode("utf-8", "replace")
+            ["netstat", "-ano"], timeout=20, **no_window_kwargs()).decode("utf-8", "replace")
     except subprocess.TimeoutExpired:
         return dict(info, error="netstat timed out after 20s (skipping focus)")
     except subprocess.SubprocessError as exc:
