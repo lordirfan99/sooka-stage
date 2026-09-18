@@ -52,6 +52,24 @@ class CDPTimeout(CDPError):
 # --------------------------------------------------------------------------
 # WebSocket framing
 # --------------------------------------------------------------------------
+def no_window_kwargs() -> dict:
+    """subprocess kwargs that keep a console child from flashing a window.
+
+    A console program (netstat, tasklist, powershell) allocates its OWN console
+    when the parent has none -- which is precisely the pythonw.exe case the
+    watchdog runs under. So "no console window" is not inherited: every console
+    child needs CREATE_NO_WINDOW explicitly, or it flashes a black window on
+    the user's desktop. With the watchdog firing every 5 minutes, that is the
+    visible-CMD-window problem.
+
+    This suppresses the *window*, never the output: callers still capture
+    stdout/stderr and still see failures.
+    """
+    if os.name != "nt":
+        return {}
+    return {"creationflags": 0x08000000}  # CREATE_NO_WINDOW
+
+
 def encode_frame(payload: bytes, opcode: int = OP_TEXT) -> bytes:
     """Client -> server frame. Client frames MUST be masked (RFC 6455)."""
     n = len(payload)

@@ -13,6 +13,7 @@ import struct
 import sys
 import threading
 import unittest
+import unittest.mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -272,6 +273,40 @@ class TestEvaluateErrors(unittest.TestCase):
         with self.assertRaises(CDPError) as ctx:
             cdp.evaluate("nope()")
         self.assertIn("ReferenceError", str(ctx.exception))
+
+
+class TestNoConsoleWindow(unittest.TestCase):
+    """Console children (netstat/tasklist/powershell) allocate their own
+    console when the parent has none -- which is the pythonw watchdog case.
+    Without CREATE_NO_WINDOW that flashes a black window on the desktop every
+    5 minutes, which is the visible-CMD-window complaint."""
+
+    def test_windows_gets_create_no_window(self):
+        from sooka_cdp import no_window_kwargs
+        with unittest.mock.patch.object(os, "name", "nt"):
+            self.assertEqual(no_window_kwargs(), {"creationflags": 0x08000000})
+
+    def test_non_windows_passes_nothing(self):
+        from sooka_cdp import no_window_kwargs
+        with unittest.mock.patch.object(os, "name", "posix"):
+            self.assertEqual(no_window_kwargs(), {})
+
+    def test_no_shell_true_survives_in_the_runner(self):
+        """shell=True routes through cmd.exe, which both spawns a console
+        window and is a command-injection shape we never need here.
+
+        Checks code lines only -- the phrase legitimately appears in comments
+        explaining why it was removed.
+        """
+        src = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "sookastage_prod.py")
+        offenders = []
+        with open(src, encoding="utf-8") as fh:
+            for lineno, line in enumerate(fh, 1):
+                code = line.split("#", 1)[0]
+                if "shell=True" in code:
+                    offenders.append(f"{lineno}: {line.strip()}")
+        self.assertEqual(offenders, [], "shell=True in code: " + "; ".join(offenders))
 
 
 class TestRunLock(unittest.TestCase):

@@ -12,6 +12,7 @@ drift apart into two different ideas of "up". Two layers, run in order:
 
 Safe to call repeatedly: every check is "is it already up?" first.
 """
+import os
 import subprocess
 import sys
 import time
@@ -34,6 +35,13 @@ WATCH_BROWSERS = [
 
 # stream -> CDP port, must match STREAMS in sookastage_prod.py
 STREAM_PORTS = {1: 9223, 2: 9225, 3: 9224}
+
+
+def _no_window():
+    """CREATE_NO_WINDOW for console children -- see sooka_cdp.no_window_kwargs.
+    Defined locally so preflight stays runnable without importing the CDP
+    stack (it runs before anything touches Discord)."""
+    return {"creationflags": 0x08000000} if os.name == "nt" else {}
 
 
 def _port_listening(port, timeout=1.0):
@@ -76,10 +84,15 @@ def ensure_discord_clients():
             _log(f"  stream {stream} (port {port}) : already up")
             continue
         _log(f"  stream {stream} (port {port}) : not listening, launching...")
+        # -WindowStyle Hidden covers the PowerShell host's own window;
+        # CREATE_NO_WINDOW stops the console being allocated in the first
+        # place (the watchdog runs under pythonw, so the child would otherwise
+        # create its own console and flash it on the desktop).
         subprocess.run(
-            ["powershell", "-ExecutionPolicy", "Bypass", "-File",
+            ["powershell", "-NoProfile", "-WindowStyle", "Hidden",
+             "-ExecutionPolicy", "Bypass", "-File",
              f"{REPO}\\scripts\\schtask_launch_client.ps1", "-Stream", str(stream)],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=30, **_no_window(),
         )
         time.sleep(8)
 
