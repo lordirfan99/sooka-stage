@@ -76,6 +76,39 @@ def ensure_watch_windows():
     _log(f"  Chrome Beta tag: found={found} tagged={tagged}")
 
 
+MANAGER_DIR = (r"C:\Users\irfan\Desktop\Restored-Desktop\SookaStream-Windows-x64-v8.6"
+               r"\SookaStream-Windows-x64-v8.6")
+PYTHONW = r"C:\Users\irfan\AppData\Local\Programs\Python\Python312\pythonw.exe"
+
+
+def ensure_renamer():
+    """Keep the channel renamer alive.
+
+    Only the one-click launcher used to start it, so once it died -- and it
+    does die -- nothing brought it back and channel names silently froze until
+    someone noticed. Same gap that used to exist for the Discord clients
+    themselves: the watchdog maintained the share state but not the processes
+    the system is made of. Starting it here means every watchdog pass repairs
+    it within 5 minutes.
+    """
+    r = subprocess.run(
+        ["powershell", "-NoProfile", "-Command",
+         "(Get-CimInstance Win32_Process -Filter \"Name='pythonw.exe'\" | "
+         "Where-Object {$_.CommandLine -like '*run_renamer*'} | Measure-Object).Count"],
+        capture_output=True, text=True, timeout=30, **_no_window())
+    try:
+        running = int((r.stdout or "0").strip())
+    except ValueError:
+        running = 0
+    if running >= 1:
+        _log(f"  renamer : already running ({running})")
+        return
+    _log("  renamer : not running, starting...")
+    subprocess.Popen([PYTHONW, os.path.join(MANAGER_DIR, "run_renamer_headless.py")],
+                     cwd=MANAGER_DIR, **_no_window())
+    time.sleep(2)
+
+
 def ensure_discord_clients():
     """Launch any Discord client whose CDP port isn't listening -- i.e. the
     process itself is gone, not just its share dropped."""
@@ -100,6 +133,8 @@ def ensure_discord_clients():
 def run(argv):
     """Full preflight, then hand off to sookastage_prod.main(argv)."""
     sys.path.insert(0, REPO)
+    _log("Checking channel renamer...")
+    ensure_renamer()
     _log("Checking watch-browser windows...")
     ensure_watch_windows()
     _log("Checking Discord clients...")
