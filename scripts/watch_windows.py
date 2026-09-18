@@ -40,9 +40,15 @@ def _get_exe_path(pid):
         kernel32.CloseHandle(h)
 
 
-def tag_chrome_beta_window():
-    """Find the visible Chrome Beta window showing sooka.my and make sure its
-    title carries "Chrome Beta". Returns (found: bool, tagged: bool)."""
+def find_watch_window(path_hint=None, title_prefix=TITLE_PREFIX):
+    """Find the first visible window whose title starts with `title_prefix`
+    and (if given) whose owning process's exe path contains `path_hint`
+    (case-insensitive). Returns (hwnd, title) or (None, None).
+
+    Used to find each browser's sooka.my tab by *install path*, not just
+    process name -- "chrome.exe" alone can't tell plain Chrome from Chrome
+    Beta, they share the same executable name in different folders.
+    """
     found = {"hwnd": None, "title": None}
 
     @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
@@ -50,24 +56,31 @@ def tag_chrome_beta_window():
         if not user32.IsWindowVisible(hwnd):
             return True
         title = _get_window_text(hwnd)
-        if not title.startswith(TITLE_PREFIX):
+        if not title.startswith(title_prefix):
             return True
-        pid = wintypes.DWORD()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        path = _get_exe_path(pid.value)
-        if CHROME_BETA_PATH_HINT.lower() in path.lower():
-            found["hwnd"] = hwnd
-            found["title"] = title
-            return False  # stop enumeration, we found it
-        return True
+        if path_hint:
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            path = _get_exe_path(pid.value)
+            if path_hint.lower() not in path.lower():
+                return True
+        found["hwnd"] = hwnd
+        found["title"] = title
+        return False  # stop enumeration, we found it
 
     user32.EnumWindows(_enum, 0)
+    return found["hwnd"], found["title"]
 
-    if not found["hwnd"]:
+
+def tag_chrome_beta_window():
+    """Find the visible Chrome Beta window showing sooka.my and make sure its
+    title carries "Chrome Beta". Returns (found: bool, tagged: bool)."""
+    hwnd, title = find_watch_window(CHROME_BETA_PATH_HINT)
+    if not hwnd:
         return False, False
-    if TAG in found["title"]:
+    if TAG in title:
         return True, False
-    user32.SetWindowTextW(found["hwnd"], f"{found['title']} - {TAG}")
+    user32.SetWindowTextW(hwnd, f"{title} - {TAG}")
     return True, True
 
 
