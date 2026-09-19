@@ -1,4 +1,4 @@
-"""Shared "make sure everything that must be running actually is" checks.
+﻿"""Shared "make sure everything that must be running actually is" checks.
 
 Used by both the one-click launcher and the recurring watchdog so they can't
 drift apart into two different ideas of "up". Two layers, run in order:
@@ -149,6 +149,13 @@ def ensure_discord_clients():
 
 
 def run(argv):
+    # Update guard: while a stream is LIVE, freeze any running Discord
+    # updater (NT suspend; resumes naturally when streams drop).
+    try:
+        subprocess.run([PYTHONW, os.path.join(REPO, "update_guard.py"), "guard"],
+                       capture_output=True, timeout=60, **_no_window())
+    except Exception as _e:
+        _log(f"  update_guard: {_e}")
     """Full preflight, then hand off to sookastage_prod.main(argv)."""
     sys.path.insert(0, REPO)
     _log("Checking channel renamer...")
@@ -164,3 +171,4 @@ def run(argv):
 
 if __name__ == "__main__":
     sys.exit(run(sys.argv[1:] or ["--all"]))
+
