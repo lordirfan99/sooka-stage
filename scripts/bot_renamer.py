@@ -65,27 +65,6 @@ def api_patch_stage(cid, topic):
         return json.loads(r.read() or b'{}')
 
 
-def _with_retry(fn, attempts=3):
-    """Retry a Discord API call; on 429 waits 2-5s and tries again."""
-    import time as _t
-    for attempt in range(attempts):
-        try:
-            return fn() if False else fn
-        except urllib.error.HTTPError as e:
-            if e.code != 429 or attempt == attempts - 1:
-                raise
-            _t.sleep(2 * (attempt + 1) * 1.5)
-    data = json.dumps({'name': name}).encode()
-    req = urllib.request.Request(
-        'https://discord.com/api/v9/channels/%s' % cid,
-        headers=H, data=data)
-    req.get_method = lambda: 'PATCH'
-    with urllib.request.urlopen(req, timeout=15) as r:
-        return json.loads(r.read() or b'{}')
-
-
-
-
 def api_patch_channel_name(cid, name):
     data = json.dumps({'name': name}).encode()
     req = urllib.request.Request(
@@ -143,7 +122,7 @@ def sync_tick():
                 except urllib.error.HTTPError as e:
                     if e.code == 429 and attempt < 2:
                         wait = 3 * (attempt + 1)
-                        log('rate-limit %s sleep %ds' % (lbl, wait := wait+3 if 'wait' in dir() else 0) if False else '')
+                        log('rate-limit %s sleep %ds' % (lbl, wait))
                         time.sleep(wait)
                         continue
                     log('%s ERR %s' % (lbl, str(e)[:80]))

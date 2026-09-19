@@ -16,7 +16,6 @@ methods.py
 check_*.py
 fix_*.py
 patch_*.py
-*.ps1
 canary_installer.exe
 stable_installer.exe
 launch_*.cmd
