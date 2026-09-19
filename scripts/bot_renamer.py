@@ -65,6 +65,27 @@ def api_patch_stage(cid, topic):
         return json.loads(r.read() or b'{}')
 
 
+def _with_retry(fn, attempts=3):
+    """Retry a Discord API call; on 429 waits 2-5s and tries again."""
+    import time as _t
+    for attempt in range(attempts):
+        try:
+            return fn() if False else fn
+        except urllib.error.HTTPError as e:
+            if e.code != 429 or attempt == attempts - 1:
+                raise
+            _t.sleep(2 * (attempt + 1) * 1.5)
+    data = json.dumps({'name': name}).encode()
+    req = urllib.request.Request(
+        'https://discord.com/api/v9/channels/%s' % cid,
+        headers=H, data=data)
+    req.get_method = lambda: 'PATCH'
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.loads(r.read() or b'{}')
+
+
+
+
 def api_patch_channel_name(cid, name):
     data = json.dumps({'name': name}).encode()
     req = urllib.request.Request(
@@ -83,8 +104,8 @@ def fetch_allocation():
 
 
 def topic_string(stream, match):
-    title = match.get('title') or 'Idle'
-    if not title.startswith('(L)') and match.get('is_live'):
+    title = (match.get('title') or 'Idle').replace('(L)','').replace('(L) ','').strip()
+    if match.get('is_live'):
         title = '(L) ' + title
     return 'Stream %d — %s' % (stream, title)
 
@@ -112,17 +133,22 @@ def sync_tick():
             continue
         topic = topic_string(stream, match)
         name = name_string(match)
-        try:
-            api_patch_stage(cid, topic)
-            log('topic[%d] -> %s' % (stream, topic[:60]))
-        except Exception as e:
-            log('topic[%d] ERR %s' % (stream, str(e)[:80]))
-        time.sleep(1.2)
-        try:
-            api_patch_channel_name(cid, name)
-            log('name[%d] -> %s' % (stream, name[:60]))
-        except Exception as e:
-            log('name[%d] ERR %s' % (stream, str(e)[:80]))
+        for lbl, fn, arg in (('topic[%d]' % stream, api_patch_stage, topic),
+                             ('name[%d]' % stream, api_patch_channel_name, name)):
+            for attempt in range(3):
+                try:
+                    fn(cid, arg)
+                    log('%s -> %s' % (lbl, (arg or name)[:55]))
+                    break
+                except urllib.error.HTTPError as e:
+                    if e.code == 429 and attempt < 2:
+                        wait = 3 * (attempt + 1)
+                        log('rate-limit %s sleep %ds' % (lbl, wait := wait+3 if 'wait' in dir() else 0) if False else '')
+                        time.sleep(wait)
+                        continue
+                    log('%s ERR %s' % (lbl, str(e)[:80]))
+                    break
+            time.sleep(2.5)
 
 
 def main():
